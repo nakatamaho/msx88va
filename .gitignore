@@ -1,0 +1,7 @@
+# ROM images, disk images and build output are never committed.
+*.rom
+*.bin
+*.zip
+*.d88
+build/
+__pycache__/
