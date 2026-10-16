@@ -33,6 +33,22 @@ Probes whose high address byte is not zero run last: if the trap compares
 all 16 bits, those accesses are not trapped and reach the VA's own I/O
 space at that port.
 
-vaeg (VA and VA2 models, 2026-10-16): all PASS, IP at the instruction;
-cost none=3010, trap-min=1048, trap=330, calln=1572. vaeg traps on the
-8-bit port and does not model the trap's timing.
+Results (iterations per frame; one loop without I/O is 4.8 us on the
+VA2):
+
+| | none | trap-min | trap | calln |
+|---|---|---|---|---|
+| PC-88VA2 | 3470 | 586 | 141 | 1280 |
+| vaeg (VA, VA2) | 3010 | 1048 | 330 | 1572 |
+
+- PC-88VA2 (2026-10-16, disk SHA-256 adf31f18...acb6e): every probe
+  PASS, the saved IP is at the trapped instruction, and `high` passes:
+  the trap compares the low 8 bits of the port only.
+- Cost on the VA2: about 24 us per trap with a minimal handler, 114 us
+  with the M01 emulating handler (decode and log), 8 us per CALLN. At
+  half a frame for I/O that is at most about 350 trapped accesses a frame.
+- So: PSG, PPI and VDP register writes go through the trap with a lean
+  per-port handler; bulk VRAM transfers (BIOS LDIRVM and the like, and a
+  title's own loops by patch) become CALLN calls that copy in native code.
+- vaeg traps on the 8-bit port as the VA2 does, but its trap is about
+  half as expensive as the hardware's.
