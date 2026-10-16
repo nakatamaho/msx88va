@@ -52,3 +52,39 @@ VA2):
   title's own loops by patch) become CALLN calls that copy in native code.
 - vaeg traps on the 8-bit port as the VA2 does, but its trap is about
   half as expensive as the hardware's.
+
+## M02: the MSX machine (`src/msx/msx.asm`)
+
+- Memory (paragraphs): code 2000h, C-BIOS main ROM 2400h, logo ROM 2C00h,
+  cartridge 3000h (slot 1 from page 1), the Z80's 64 KiB 4000h, slot-3 RAM
+  5000h, VRAM 6000h, an FFh page 6400h, native stack 6800h. The IPL
+  moves itself below 2000h, then loads past 64 KiB without crossing a
+  64 KiB physical boundary in one read.
+- Slots: an A8h write copies each changed page into the Z80 segment (16
+  KiB), after copying a RAM page back to its store. C-BIOS's CHKRAM search
+  is patched out (with copied pages every slot looks writable): slot 3 in
+  pages 2 and 3. The printer entries are patched to "not ready" (ports
+  90h and 91h are outside the trap). `tools/cbios.py` lists the patches.
+- Trap handler: OUT (n),A and IN A,(n) go through a table by port;
+  the ED forms through a decoder (IN r,(C) sets S, Z, P; the block forms
+  set Z from B and run one iteration per trap). On the way out, and in the
+  VRTC handler, the Z80 interrupt is injected while the VDP's line is
+  active (frame flag and R1 bit 5) and the Z80 has interrupts enabled.
+- VDP: VRAM with auto-increment and read-ahead, registers, status (frame
+  flag only). Rendering in the VRTC handler, two character rows a frame
+  into 320x200 4-bit graphics (picture at dots 32-287, lines 4-195); a
+  pass restarts when VRAM or a register changed during the last one.
+  Graphics I, II and text; no sprites, no multicolour yet.
+- PSG: written through to the OPN's SSG (ports 44h/45h); tone, noise and
+  envelope periods scaled by 62400/111861 for the SSG's 998.4 kHz clock;
+  register 7's port direction bits keep the VA's. Register 14 reads BFh.
+- PPI: slot select, port C, bit set/reset; no keys yet. ESC on the VA
+  keyboard restarts the machine.
+- vaeg keeps a compatible-mode HALT halted after a native interrupt (its
+  Z80 core's HALT flag stays set; the saved IP is already past the HALT).
+  `--vaeg` replaces C-BIOS's two HALTs (wait_b, chget) with NOPs; the
+  test cartridge waits by polling JIFFY.
+
+Test cartridge (`src/cart/m02cart.asm`): screen 2 colour bars, then 768
+bytes x 10 written to VRAM by OTIR, LDIRVM and an OUT (98h),A loop, in
+frames; vaeg (VA2 model): 31, 33, 20.

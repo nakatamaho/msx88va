@@ -59,16 +59,14 @@ def write_d88(path: Path, image: bytes, name: str) -> None:
 
 
 def build_boot_disk(source: Path, output: Path, name: str,
-                    defines: list[str] = ()) -> int:
-    """Assemble SOURCE with the NASM DEFINES and write a self-booting disk
-    that loads it to 2000:0000; returns the number of sectors the IPL
-    loads."""
+                    defines: list[str] = (), append: bytes = b"") -> int:
+    """Assemble SOURCE with the NASM DEFINES, append APPEND, and write a
+    self-booting disk that loads both to 2000:0000; returns the number of
+    sectors the IPL loads."""
     with tempfile.TemporaryDirectory(prefix="msx88va-build-") as tmp:
         work = Path(tmp)
         nasm([*(f"-D{d}" for d in defines), "-o", str(work / "CODE.BIN"), str(source)])
-        payload = (work / "CODE.BIN").read_bytes()
-        if len(payload) > 0xF000:
-            raise SystemExit("error: the payload leaves no room for the stack")
+        payload = (work / "CODE.BIN").read_bytes() + append
         sectors = (len(payload) + SECTOR - 1) // SECTOR
         nasm([f"-DLOAD_SECTORS={sectors}", "-o", str(work / "IPL.BIN"),
               str(REPO / "src/boot/ipl.asm")])

@@ -27,6 +27,10 @@
 ; The PC-88VA ROM reads the first sector of drive 1 to 3000:0000 and jumps
 ; there. This sector reads LOAD_SECTORS sectors, from logical sector 1, to
 ; 2000:0000 with the ROM floppy disk BIOS (INT 80h) and jumps to 2000:0000.
+; The load may exceed 64 KiB: ES advances after each read, and no read
+; crosses a 64 KiB physical boundary. A load past 30000h would overwrite
+; this sector, so it first moves itself to IPL_SEG, below LOAD_SEG, and
+; puts its stack below itself.
 ; The method is that of vaeg's demos/sgp-boot/ipl.asm.
 ;
 ; Disk: 2HD, 77 cylinders x 2 heads x 8 sectors of 1024 bytes.
@@ -35,14 +39,28 @@
 		org	0
 
 LOAD_SEG	equ	2000h
+IPL_SEG		equ	1fe0h		; 512 bytes below LOAD_SEG
 SECTORS		equ	8		; per track
 SECTOR_N	equ	3		; sector length 128 << N
 DISK_MODE	equ	23h		; INT 80h 0Ah: 2HD, 1024 bytes
 RETRIES		equ	4
 
 start:		cli
+		cld
 		mov	ax,cs
 		mov	ds,ax
+		mov	ax,IPL_SEG
+		mov	es,ax
+		xor	si,si
+		xor	di,di
+		mov	cx,256
+		rep	movsw
+		jmp	IPL_SEG:moved
+moved:		mov	ax,cs
+		mov	ds,ax
+		mov	ax,IPL_SEG - 100h	; the stack below this sector
+		mov	ss,ax
+		mov	sp,1000h
 		sti
 		cld
 		mov	ax,0a00h + DISK_MODE	; disk mode of drive 1
@@ -65,8 +83,16 @@ start:		cli
 		sub	al,dh
 		xor	ah,ah
 		cmp	ax,di
-		jbe	.count
+		jbe	.boundary
 		mov	ax,di
+.boundary:	mov	bx,es			; sectors to the next 64 KiB boundary
+		shl	bx,4
+		neg	bx
+		shr	bx,7 + SECTOR_N
+		jz	.count			; at a boundary: 64
+		cmp	ax,bx
+		jbe	.count
+		mov	ax,bx
 .count:		mov	[count],al
 		mov	byte [tries],RETRIES
 .read:		mov	al,[count]
@@ -86,8 +112,10 @@ start:		cli
 		xor	bh,bh
 		add	si,bx
 		sub	di,bx
-		shl	bx,7 + SECTOR_N
-		add	bp,bx
+		shl	bx,3 + SECTOR_N		; paragraphs
+		mov	ax,es
+		add	ax,bx
+		mov	es,ax
 		jmp	.next
 .done:		jmp	LOAD_SEG:0000h
 
