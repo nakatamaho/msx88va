@@ -49,14 +49,12 @@ def main() -> int:
     parser.add_argument("--cbios", type=Path, default=cbios.default_source(),
                         help="zip or directory with C-BIOS 0.29a (default: $MSX_CBIOS)")
     parser.add_argument("--cart", type=Path, help="cartridge ROM, 8, 16 or 32 KiB")
-    parser.add_argument("--vaeg", action="store_true",
-                        help="replace C-BIOS's HALTs for vaeg (not for the hardware)")
     parser.add_argument("--output", type=Path, default=d88.REPO / "build/msx.d88")
     args = parser.parse_args()
     if args.cbios is None:
         parser.error("no C-BIOS: give --cbios or set MSX_CBIOS")
 
-    main_rom, logo_rom = cbios.load(args.cbios, args.vaeg)
+    main_rom, logo_rom = cbios.load(args.cbios)
     cart = b""
     if args.cart:
         cart = args.cart.read_bytes()
@@ -69,8 +67,7 @@ def main() -> int:
                                   defines=[f"CART_PAGES={pages}"],
                                   append=main_rom + logo_rom + cart)
     digest = hashlib.sha256(args.output.read_bytes()).hexdigest()
-    patches = len(cbios.PATCHES) + (len(cbios.VAEG_PATCHES) if args.vaeg else 0)
-    print(f"{args.output}: MSX, C-BIOS with {patches} patches, "
+    print(f"{args.output}: MSX, C-BIOS with {len(cbios.PATCHES)} patches, "
           f"{pages} cartridge pages ({sectors} sectors), SHA-256 {digest}")
     return 0
 

@@ -32,10 +32,6 @@ msx88va or that would reach ports outside the I/O trap's ranges:
   search writes to every slot's pages 2 and 3; with copied pages every
   slot looks writable. Replaced by slot 3 in pages 2 and 3.
 - LPTOUT and LPTSTT (printer ports 90h, 91h): always not ready.
-
-VAEG_PATCHES (build.py --vaeg, never for the hardware): vaeg does not end
-a compatible-mode HALT on a native interrupt (../pacman docs/DESIGN.md),
-so C-BIOS's two HALTs become NOPs; its waits then spin.
 """
 
 import hashlib
@@ -58,10 +54,6 @@ PATCHES = [
     (0x00A8, "c3", "afc9", "LPTSTT: XOR A; RET (not ready)"),
 ]
 
-VAEG_PATCHES = [
-    (0x108A, "76", "00", "wait_b: HALT -> NOP"),
-    (0x119F, "76", "00", "chget: HALT -> NOP"),
-]
 
 
 def default_source() -> Path | None:
@@ -82,7 +74,7 @@ def _read(source: Path, name: str) -> bytes:
     raise SystemExit(f"error: {name} not found in {source}")
 
 
-def load(source: Path, vaeg: bool = False) -> tuple[bytes, bytes]:
+def load(source: Path) -> tuple[bytes, bytes]:
     """The patched main ROM (32 KiB) and the logo ROM (16 KiB)."""
     roms = {}
     for name in (MAIN, LOGO):
@@ -93,7 +85,7 @@ def load(source: Path, vaeg: bool = False) -> tuple[bytes, bytes]:
                              "(C-BIOS 0.29a)")
         roms[name] = data
     main = bytearray(roms[MAIN])
-    for offset, old, new, _ in PATCHES + (VAEG_PATCHES if vaeg else []):
+    for offset, old, new, _ in PATCHES:
         old_b, new_b = bytes.fromhex(old), bytes.fromhex(new)
         if main[offset:offset + len(old_b)] != old_b:
             raise SystemExit(f"error: unexpected bytes at {offset:04X}h")

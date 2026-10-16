@@ -80,10 +80,10 @@ VA2):
   register 7's port direction bits keep the VA's. Register 14 reads BFh.
 - PPI: slot select, port C, bit set/reset; no keys yet. ESC on the VA
   keyboard restarts the machine.
-- vaeg keeps a compatible-mode HALT halted after a native interrupt (its
-  Z80 core's HALT flag stays set; the saved IP is already past the HALT).
-  `--vaeg` replaces C-BIOS's two HALTs (wait_b, chget) with NOPs; the
-  test cartridge waits by polling JIFFY.
+- HALT: a native interrupt ends a compatible-mode HALT and the IRET
+  resumes after it (VA and VA2, ../pacman M01). vaeg kept the core halted
+  until its fix in nakatamaho/vaeg PR #42 (M118, cc0d31fc); older vaeg
+  builds hang in C-BIOS's first wait.
 
 Test cartridge (`src/cart/m02cart.asm`): screen 2 colour bars, then 768
 bytes x 10 written to VRAM by OTIR, LDIRVM and an OUT (98h),A loop, in

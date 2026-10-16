@@ -48,7 +48,8 @@ init:		ei
 		call	INIGRP
 		call	bars
 		ld	b,180
-		call	frames
+wait:		halt
+		djnz	wait
 
 		call	INIT32
 		ld	hl,s_title
@@ -126,16 +127,8 @@ out_i:		out	(98h),a
 		call	BEEP
 		ld	hl,s_done
 		call	print
-idle:		jr	idle
-
-; Wait B frames. JIFFY is polled instead of HALT, which vaeg does not end
-; in compatible mode.
-frames:		ld	hl,JIFFY
-		ld	a,(hl)
-frames_l:	cp	(hl)
-		jr	z,frames_l
-		djnz	frames
-		ret
+idle:		halt
+		jr	idle
 
 ; Screen 2: pattern table all FFh except a grid line, colour table bars.
 bars:		ld	hl,0000h		; patterns: FFh, the last line 00h
@@ -202,8 +195,7 @@ rdvrm:		ld	a,l			; A = VRAM[HL]
 		in	a,(98h)
 		ret
 
-start:		ld	b,1			; from a frame edge
-		call	frames
+start:		halt				; from a frame edge
 		ld	hl,(JIFFY)
 		ld	(t0),hl
 		ret
