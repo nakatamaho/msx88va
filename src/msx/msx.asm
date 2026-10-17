@@ -53,6 +53,7 @@ EMPTYSEG	equ	6400h		; 16 KiB of FFh: an empty page
 STACKSEG	equ	6800h
 
 BRKEM_VEC	equ	70h		; 40h-7Bh unused (technical manual, vector map)
+CALLN_VEC	equ	71h		; C-BIOS VRAM block routines (tools/cbios.py)
 TRAP_IN_VEC	equ	7ch
 TRAP_OUT_VEC	equ	7dh
 VRTC_VEC	equ	0ah
@@ -199,6 +200,8 @@ install:	cli
 		mov	word [es:TRAP_IN_VEC * 4],trap
 		mov	[es:TRAP_IN_VEC * 4 + 2],cs
 		mov	word [es:TRAP_OUT_VEC * 4],trap
+		mov	word [es:CALLN_VEC * 4],vram_block
+		mov	[es:CALLN_VEC * 4 + 2],cs
 		mov	[es:TRAP_OUT_VEC * 4 + 2],cs
 		push	cs
 		pop	es
@@ -378,8 +381,8 @@ in_table	dw	vdp_data_r, vdp_stat_r
 		times	4 dw io_ff
 		dw	ppi_a_r, ppi_b_r, ppi_c_r, io_ff
 
-; ED-prefixed I/O: IN r,(C), OUT (C),r, and the block instructions, one
-; iteration per trap (a repeat with B not zero runs again). IN r,(C) sets
+; ED-prefixed I/O: IN r,(C), OUT (C),r, and the block instructions; a
+; repeat (INIR, INDR, OTIR, OTDR) runs to B = 0 in one trap. IN r,(C) sets
 ; S, Z and P; the block instructions set Z from B. Reached by a jump from
 ; trap, so that its pushes are at T_BC and T_DE; returns to trap.done.
 trap_ed:	push	cx
@@ -443,19 +446,91 @@ trap_ed:	push	cx
 		test	byte [ed_op],08h
 		jz	.bz
 		sub	word [bp + T_HL],2
-.bz:		and	byte [bp + 6],0bfh	; Z = (B = 0)
-		cmp	byte [bp + T_BC + 1],0
-		jne	.bnz
-		or	byte [bp + 6],40h
+.bz:		cmp	byte [bp + T_BC + 1],0
+		je	.bdone
+		test	byte [ed_op],10h	; a repeat: the next byte in the
+		jnz	.block			; same trap
+		and	byte [bp + 6],0bfh	; Z = 0
 		jmp	.next
-.bnz:		test	byte [ed_op],10h
-		jnz	.ret			; a repeat: run it again
+.bdone:		or	byte [bp + 6],40h	; Z = 1
 .next:		add	word [bp + 2],2
 .ret:		pop	es
 		pop	di
 		pop	dx
 		pop	cx
 		jmp	trap.done
+
+; ---------------------------------------------------------------------------
+; C-BIOS 0.29a's FILVRM, LDIRMV and LDIRVM start with CALLN CALLN_VEC
+; (tools/cbios.py); the routine is done here in one call, and its RET is
+; done here too. The Z80 address of the CALLN tells which routine. Frame as
+; for vrtc: [bp] Z80 SP, [bp+2] IP (after the CALLN), [bp+4] CS, [bp+6] PSW.
+
+FILVRM_PC	equ	026dh		; A: data, BC: count, HL: VRAM address
+LDIRMV_PC	equ	0281h		; HL: VRAM, DE: RAM, BC: count
+LDIRVM_PC	equ	0297h		; HL: RAM, DE: VRAM, BC: count
+
+vram_block:	push	bp
+		mov	bp,sp
+		pusha
+		push	ds
+		push	es
+		sti
+		mov	si,[bp + 2]
+		sub	si,3
+		jcxz	.done			; BC = 0: nothing
+		cmp	si,FILVRM_PC
+		je	.fill
+		cmp	si,LDIRVM_PC
+		je	.to_vram
+		cmp	si,LDIRMV_PC
+		jne	.done
+		mov	si,bx			; VRAM -> RAM
+		mov	di,dx
+		mov	ax,Z80SEG
+		mov	es,ax
+		mov	ax,VRAMSEG
+		mov	ds,ax
+.r:		and	si,3fffh
+		movsb
+		loop	.r
+		mov	bx,si
+		jmp	.addr
+.to_vram:	mov	si,bx			; RAM -> VRAM (DS = Z80SEG)
+		mov	di,dx
+		mov	ax,VRAMSEG
+		mov	es,ax
+.w:		and	di,3fffh
+		movsb
+		loop	.w
+		mov	bx,di
+		jmp	.dirty
+.fill:		mov	di,bx
+		mov	bx,VRAMSEG
+		mov	es,bx
+.f:		and	di,3fffh
+		stosb
+		loop	.f
+		mov	bx,di
+.dirty:		mov	byte [cs:vdirty],1
+.addr:		and	bh,3fh			; the VDP address after the block
+		mov	[cs:vaddr],bx
+		mov	byte [cs:vfirst],0
+.done:		push	cs
+		pop	ds
+		mov	ax,Z80SEG		; RET: PC from the Z80 stack
+		mov	es,ax
+		mov	bx,[bp]
+		mov	ax,[es:bx]
+		mov	[bp + 2],ax
+		add	word [bp],2
+		cli
+		call	try_inject
+		pop	es
+		pop	ds
+		popa
+		pop	bp
+		iret
 
 ; Z80 register number (B C D E H L - A) -> offset from BP; 0: none.
 ed_regs		db	T_BC + 1, T_BC, T_DE + 1, T_DE, T_HL + 1, T_HL, 0, T_A

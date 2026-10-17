@@ -32,6 +32,10 @@ msx88va or that would reach ports outside the I/O trap's ranges:
   search writes to every slot's pages 2 and 3; with copied pages every
   slot looks writable. Replaced by slot 3 in pages 2 and 3.
 - LPTOUT and LPTSTT (printer ports 90h, 91h): always not ready.
+- FILVRM, LDIRMV and LDIRVM: their first three bytes become CALLN 71h;
+  msx88va's native code does the whole block and the RET (one call
+  instead of one I/O trap a byte). The addresses are those of the jump
+  table targets at 0056h, 0059h and 005Ch; src/msx/msx.asm knows them.
 """
 
 import hashlib
@@ -52,6 +56,9 @@ PATCHES = [
      "CHKRAM: no mapper ports, no RAM search; A8h = F0h, continue at 0D87h"),
     (0x00A5, "c3", "37c9", "LPTOUT: SCF; RET (aborted)"),
     (0x00A8, "c3", "afc9", "LPTSTT: XOR A; RET (not ready)"),
+    (0x026D, "f5cd60", "eded71", "FILVRM: CALLN 71h (native fill and RET)"),
+    (0x0281, "cd5502", "eded71", "LDIRMV: CALLN 71h (native copy and RET)"),
+    (0x0297, "ebcd60", "eded71", "LDIRVM: CALLN 71h (native copy and RET)"),
 ]
 
 

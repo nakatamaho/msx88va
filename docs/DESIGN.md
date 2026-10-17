@@ -67,7 +67,10 @@ VA2):
   90h and 91h are outside the trap). `tools/cbios.py` lists the patches.
 - Trap handler: OUT (n),A and IN A,(n) go through a table by port;
   the ED forms through a decoder (IN r,(C) sets S, Z, P; the block forms
-  set Z from B and run one iteration per trap). On the way out, and in the
+  set Z from B; a repeat runs to B = 0 in one trap).
+- C-BIOS's FILVRM, LDIRMV and LDIRVM start with CALLN 71h (build-time
+  patch); the native handler does the whole block and the RET, and
+  injects a pending interrupt as the trap handler does. On the way out, and in the
   VRTC handler, the Z80 interrupt is injected while the VDP's line is
   active (frame flag and R1 bit 5) and the Z80 has interrupts enabled.
 - VDP: VRAM with auto-increment and read-ahead, registers, status (frame
@@ -87,4 +90,17 @@ VA2):
 
 Test cartridge (`src/cart/m02cart.asm`): screen 2 colour bars, then 768
 bytes x 10 written to VRAM by OTIR, LDIRVM and an OUT (98h),A loop, in
-frames; vaeg (VA2 model): 31, 33, 20.
+frames:
+
+| | OTIR | LDIRVM | OUT |
+|---|---|---|---|
+| PC-88VA2, one trap a byte (2026-10-17) | 141 | 146 | 86 |
+| vaeg, one trap a byte | 31 | 33 | 20 |
+| vaeg, OTIR in one trap, LDIRVM by CALLN | 5 | 1 | 20 |
+
+On the VA2 that is 190 us a byte for OUT and 310 us for OTIR and OUTI
+(the screen being redrawn takes part of it). The PC-88VA2 run took
+several minutes to reach the cartridge (C-BIOS start and logo), against
+about 9 s in vaeg; not yet explained. C-BIOS 0.29a's BEEP makes no sound
+(it only writes "BEEP" to the debug device), so the PSG is still
+untested.
