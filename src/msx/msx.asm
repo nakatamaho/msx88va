@@ -291,6 +291,9 @@ vrtc:		push	bp
 		call	render_step
 		call	sprite_step
 		call	sprite_flags
+%ifdef DUMP_VRAM				; vaeg tests: VRAM and the
+		call	dump_vram		; registers into spare GVRAM
+%endif
 		cmp	word [bp + 4],Z80SEG
 		jne	.eoi
 		call	try_inject
@@ -346,6 +349,27 @@ restart:	push	bp
 		mov	cx,8
 		rep	stosw
 		ret
+
+%ifdef DUMP_VRAM
+; VRAM at GVRAM offset 8000h, the eight registers at C000h. DS = CS.
+dump_vram:	push	ds
+		mov	es,[gvram_seg]
+		mov	di,8000h
+		mov	ax,VRAMSEG
+		mov	ds,ax
+		xor	si,si
+		mov	cx,2000h
+		rep	movsw
+		pop	ds
+		mov	si,vregs
+		mov	cx,4
+		rep	movsw
+		mov	ax,[log_n]
+		stosw
+		ret
+
+log_n		dw	0
+%endif
 
 ; With the VDP's interrupt line active (frame flag and R1 bit 5) and the
 ; Z80's interrupts enabled: push the Z80 PC on the Z80 stack, PC = 0038h,
@@ -533,7 +557,9 @@ trap_ed:	push	cx
 ; The Z80 address of the CALLN selects the handler; the handler does the
 ; routine's work and its RET (bios_ret), or continues the Z80 code at an
 ; address in the routine (bios_cont, AX). On entry the registers are the
-; Z80's (AL = A, CX = BC, DX = DE, BX = HL) and DS is the Z80 segment.
+; Z80's (AL = A, CX = BC, DX = DE, BX = HL) and DS is the Z80 segment. A
+; handler that does the whole routine leaves the Z80 registers as the
+; C-BIOS routine does (games compute their next call from them).
 ; Frame: [bp] Z80 SP, [bp+2] IP (after the CALLN), [bp+4] CS, [bp+6] PSW,
 ; then the PUSHA image (B_AX ...).
 
@@ -556,7 +582,29 @@ bios_call:	push	bp
 		je	.found
 		add	si,4
 		jmp	.find
-.found:		jmp	[cs:si + 2]
+.found:
+%ifdef DUMP_VRAM				; log: routine, HL, BC, DE, frame
+		push	es
+		push	si
+		mov	si,[cs:log_n]
+		cmp	si,(4000h - 200h) / 10
+		jae	.full
+		push	ax
+		mov	es,[cs:gvram_seg]
+		imul	si,si,10
+		add	si,0c200h
+		mov	[es:si],di
+		mov	[es:si + 2],bx
+		mov	[es:si + 4],cx
+		mov	[es:si + 6],dx
+		mov	ax,[cs:frames]
+		mov	[es:si + 8],ax
+		inc	word [cs:log_n]
+		pop	ax
+.full:		pop	si
+		pop	es
+%endif
+		jmp	[cs:si + 2]
 
 bios_table	dw	026dh, h_filvrm		; A: data, BC: count, HL: VRAM
 		dw	0281h, h_ldirmv		; HL: VRAM, DE: RAM, BC: count
@@ -618,7 +666,8 @@ h_filvrm:	sti
 		push	cs
 		pop	ds
 		call	vram_written
-.done:		jmp	bios_ret
+.done:		mov	word [bp + B_CX],0	; B = C = 0, A kept
+		jmp	bios_ret
 
 h_ldirvm:	sti				; RAM -> VRAM (DS = Z80SEG)
 		jcxz	.done
@@ -636,7 +685,13 @@ h_ldirvm:	sti				; RAM -> VRAM (DS = Z80SEG)
 		push	cs
 		pop	ds
 		call	vram_written
-.done:		jmp	bios_ret
+.done:		mov	ax,[bp + B_BX]		; HL = DE, DE = HL + BC, BC = 0098h,
+		mov	cx,[bp + B_CX]		; A = 0
+		add	ax,cx
+		mov	cx,[bp + B_DX]
+		mov	[bp + B_BX],cx
+		mov	[bp + B_DX],ax
+		jmp	vram_block_end
 
 h_ldirmv:	sti				; VRAM -> RAM
 		jcxz	.done
@@ -652,11 +707,22 @@ h_ldirmv:	sti				; VRAM -> RAM
 		and	si,3fffh
 		mov	[cs:vaddr],si
 		mov	byte [cs:vfirst],0
-.done:		jmp	bios_ret
+.done:		mov	ax,[bp + B_BX]		; DE = HL, BC = 0098h, A = 0
+		mov	[bp + B_DX],ax
+		; fall through
+
+vram_block_end:	mov	word [bp + B_CX],0098h
+		mov	byte [bp + B_AX],0
+		and	byte [bp + 6],3fh	; Z = 1, S = 0 (DEC A to 0)
+		or	byte [bp + 6],40h
+		jmp	bios_ret
 
 h_setwrt:	push	cs
 		pop	ds
 		and	bh,3fh
+		mov	al,bh			; A = H & 3Fh | 40h
+		or	al,40h
+		mov	[bp + B_AX],al
 		mov	[vaddr],bx
 		mov	byte [vfirst],0
 		BIOS_EI
@@ -665,6 +731,7 @@ h_setwrt:	push	cs
 h_setrd:	push	cs
 		pop	ds
 		and	bh,3fh
+		mov	[bp + B_AX],bh		; A = H & 3Fh
 		mov	[vaddr],bx
 		mov	byte [vfirst],0
 		call	vread
