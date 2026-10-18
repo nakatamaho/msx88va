@@ -21,9 +21,9 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 # THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-"""Assemble the M02 test cartridge (src/cart/m02cart.asm) to a 16 KiB ROM.
+"""Assemble a test cartridge (src/cart/NAME.asm) to a 16 KiB ROM.
 
-    python3 -I tools/build_m02cart.py [--output PATH]
+    python3 -I tools/build_cart.py [--name m02cart|m03cart] [--output PATH]
 
 Needs z80asm 1.8 ($Z80ASM, default z80asm).
 """
@@ -41,12 +41,15 @@ PAGE = 0x4000
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--output", type=Path, default=REPO / "build/m02cart.rom")
+    parser.add_argument("--name", default="m03cart", choices=["m02cart", "m03cart"])
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.output is None:
+        args.output = REPO / f"build/{args.name}.rom"
     with tempfile.TemporaryDirectory(prefix="msx88va-cart-") as tmp:
         out = Path(tmp) / "cart.bin"
         subprocess.run([os.environ.get("Z80ASM", "z80asm"), "-o", str(out),
-                        str(REPO / "src/cart/m02cart.asm")], check=True)
+                        str(REPO / f"src/cart/{args.name}.asm")], check=True)
         rom = out.read_bytes()
     if len(rom) > PAGE:
         raise SystemExit(f"error: the cartridge is {len(rom)} bytes")
