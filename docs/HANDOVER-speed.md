@@ -158,3 +158,56 @@ compatible-mode timing is not measured. Confirm every gain on the VA
 - Keep `vars`/`end_of_program` (the start-up snapshot for the MSX reset)
   in mind when adding data: everything after `vars:` is restored at a
   reset.
+
+## 6. Later: MSX2 (notes, nothing tried)
+
+Recorded 2026-10-18 for a later study. A complete MSX2 is not possible
+(the VA has no raster interrupt); selected cartridge titles may be.
+
+In favour:
+
+- Bitmap screens may need no renderer at all. SCREEN 5 VRAM (two dots a
+  byte, the left one in the high nibble) has the VA's 4-bpp layout: keep
+  the MSX's VRAM inside GVRAM and point a framebuffer at it (256 dots =
+  128 bytes a line, 212 lines fit the VA's 320x240 15 kHz mode). To
+  check: whether the VA's framebuffer accepts that width and pitch.
+- SCREEN 7 (512x212x16) maps to the 640-dot mode, SCREEN 8 (256 colours)
+  to 8 or 16 bpp; the V9938's 9-bit palette to the VA palette.
+- Vertical scroll (R23) is a framebuffer start address; screen splits
+  may use the four framebuffer descriptors (regions one above the other).
+- The V9938 command engine (HMMM, LMMM, LMMV...) resembles the SGP's
+  BitBlt with logical operations and transparency.
+
+Against (worst first):
+
+- Trap cost. MSX2 games drive the VDP directly far more than through the
+  BIOS (about 15 register writes to set up one VDP command); at ~200 us
+  a trap on the hardware a few dozen a frame use the whole frame.
+  Per-title patches or sequence recognition would be needed.
+- Memory mapper and expanded slots. The Z80-compatible mode sees one flat
+  64 KiB segment and the uPD9002 has no paging, so a mapper switch is a
+  16 KiB copy (2-4 ms). The mapper ports FCh-FFh and the RTC B4h-B5h fit
+  a second trap block A0h-FFh, but the trap compares the low 8 bits of
+  the port, so native I/O such as 01CBh or the trap control FFE0h-FFEFh
+  would be caught too (trap off around it). The secondary slot register
+  is a memory write at FFFFh and cannot be trapped: patch the BIOS
+  (C-BIOS has an MSX2 main ROM and a sub-ROM).
+- Sprite mode 2: colours per line can be baked into the TSP's 4-bpp
+  sprite images; the OR mixing of overlapping sprites (CC) cannot; eight
+  a line nearly fills the TSP's ~256 dots a line.
+- Line interrupts (R19). No raster interrupt on the VA.
+
+Approximating line interrupts: when a game's line-interrupt handler only
+writes registers (R23 scroll, display page), inject the interrupt into
+the Z80 at roughly the right time (a VA timer started at VRTC; timing
+loose), record what the handler wrote as "from line N", and display the
+next frame as split regions with the framebuffer descriptors. Loose
+timing, exact picture. Not covered: per-line palette changes (one
+palette for the whole screen), handlers that test the line position,
+more than four regions, heavy VRAM transfers inside the handler.
+
+First steps: analyse a target (Aleste, Compile 1988, is the usual
+example; its screen mode, mapper and use of line interrupts are not
+checked) in openMSX — screen mode, what the line-interrupt handler
+writes, VDP accesses and mapper switches a frame — and test on the VA a
+256-dot-wide framebuffer and a two-region split with different scroll.
