@@ -96,8 +96,11 @@ Build-time test options (`tools/build_dos.py --define ...`):
 
 - `PROFILE`: the Z80 PC at every VRTC, a ring of 4096 words at GVRAM
   C200h (`capture id gvram`, the file's offset C200h; the count at
-  C000h). Shows whether the game finished its frame (PC in its idle
-  loop).
+  C000h) — shows whether the game finished its frame (PC in its idle
+  loop); the Z80 PC of every trap, a ring of 2048 words at D200h (count
+  at D000h) — the trap sites; and a copy of Z80 E380h-E47Fh at DF00h
+  (code a game builds in RAM). Disassemble with `z80dis`
+  (`../z80venv`).
 - `DUMP_VRAM`: VRAM at GVRAM 8000h, the VDP registers at C000h, and a log
   of the BIOS VRAM calls; costs about half a frame itself, so the game
   runs late while it is on — do not judge timing with it.
@@ -138,6 +141,32 @@ compatible-mode timing is not measured. Confirm every gain on the VA
 6. **Interrupt latency.** `try_inject` also runs at the end of a trap or
    CALLN when the frame flag is pending, so a game that re-enables the
    VDP interrupt gets it immediately (as on an MSX).
+
+### Titles that trap (vaeg, 2026-10-18, frames of play)
+
+| Title (ROM size) | Traps/frame | BIOS calls/frame | Where |
+|---|---|---|---|
+| 1984 maze game (16 KiB) | 0 | 20 | — |
+| 1984 digging game (32 KiB) | 0 | 35 | — |
+| Star Force (32 KiB) | 48 | 11 | 98% at RAM E407h: `OUT (98h),A; RET`, called once a byte from ROM loops such as `LD A,(HL); CALL E407h; INC HL; DJNZ` (4376h, 6428h, 65D7h, 6E74h...) and `LD A,(HL); INC HL; CP C9h; JR Z; CALL E407h; JR` (50EDh, 63E3h) |
+| Antarctic Adventure (16 KiB) | 92 | 0 | its own VRAM routines: copy `LD A,(HL); OUT (98h),A; INC HL; DEC BC; LD A,B; OR C; JR NZ` (44E6h), fill `LD A,H; OUT (98h),A; DEC BC; LD A,B; OR C; JR NZ` (44FAh), run `OUT (98h),A; PUSH HL; POP HL; DJNZ` (456Ah), address set-up `LD A,E; OUT (99h),A; LD A,D; OUT (99h),A` (48C9h) |
+
+At ~200 us a trap these two need 10 and 18 ms a frame on the hardware:
+half speed or worse. vaeg hides it (cheap traps).
+
+**Proposed: continue the Z80 in a native interpreter at a trap.** The
+loops above have many shapes, so matching each is fragile. Instead, at an
+OUT/IN trap, interpret the following Z80 code natively — a small subset:
+LD r,(HL)/LD r,r'/LD r,n, INC/DEC r and rr, ADD/SUB/AND/OR/XOR/CP r and
+n, JR/JR cc/DJNZ/JP, CALL/RET (on the Z80 stack, DS0:BP), PUSH/POP, and
+OUT/IN to the MSX ports done directly — until an instruction outside the
+subset, a jump outside a window, or an instruction budget, then return to
+compatible mode at that PC with the registers and flags written back.
+Each byte then costs microseconds of interpretation instead of a trap.
+Flags must be exact for the instructions interpreted (the Z80's, not the
+V30's: H, N, P/V). Check the result against vaeg runs of the same title
+(screens and SAT dumps) and measure with the m02 cartridge's OUT loop.
+The address set-up pair (two OUTs to 99h) is the same mechanism.
 
 ## 5. Pitfalls already met
 

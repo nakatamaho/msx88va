@@ -303,6 +303,14 @@ vrtc:		push	bp
 		inc	word [prof_n]
 		mov	ax,[prof_n]
 		mov	[es:0c000h],ax
+		push	ds			; and Z80 E380h-E47Fh at GVRAM
+		mov	ax,Z80SEG		; DF00h
+		mov	ds,ax
+		mov	si,0e380h
+		mov	di,0df00h
+		mov	cx,80h
+		rep	movsw
+		pop	ds
 %endif
 		call	kbd_scan
 		cmp	word [bp + 4],Z80SEG	; a reset only from the Z80 code
@@ -450,6 +458,19 @@ trap:		push	bp
 		push	cs
 		pop	ds
 		inc	word [traps]
+%ifdef PROFILE					; vaeg tests: the Z80 PC of
+		push	es			; each trap, a ring of 2048
+		push	di			; words at GVRAM D200h
+		mov	es,[gvram_seg]
+		mov	di,[traps]
+		and	di,07ffh
+		shl	di,1
+		mov	[es:0d200h + di],si
+		mov	di,[traps]
+		mov	[es:0d000h],di
+		pop	di
+		pop	es
+%endif
 		cmp	bl,0d3h
 		jne	.not_out
 		add	word [bp + 2],2		; OUT (n),A
