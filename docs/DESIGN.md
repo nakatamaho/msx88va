@@ -157,3 +157,24 @@ untested.
 - PC-88VA and PC-88VA2 (2026-10-18, disk 6d0214cb...): PSG, keys and
   sprites work. Disk bad9ce14... on both: the colours 8 and 9 right with
   both palette sets, STATFL C7h/E7h as in vaeg, HELP resets the MSX.
+
+## M04: real cartridges
+
+- 16 and 32 KiB cartridges without a mapper (two 1984 titles) boot and
+  play in vaeg; neither does any trapped I/O while playing: all VDP, PSG
+  and keyboard access goes through the C-BIOS routines done by CALLN (20
+  to 35 calls a frame).
+- The native routines leave the Z80 registers as C-BIOS does: LDIRVM
+  returns HL = DE, DE = HL + BC, BC = 0098h, A = 0 (C-BIOS ends with
+  EX DE,HL); LDIRMV DE = HL; FILVRM BC = 0; SETWRT/SETRD set A. A game
+  that computes its next LDIRVM from the returned registers drew its text
+  one byte off before this.
+- VRTC handler cost in vaeg (PC-88VA2 model, cycles of 141 560 a frame),
+  one of the games playing: keyboard 5 400, changed cells 7 700, TSP
+  sprites 9 400, sprite flags 18 000 (33 000 before the list of visible
+  sprites only; the row test is a 32-bit AND), 41 000 in all.
+- Test options for `tools/build.py --define`: TEST_RESET=n (an MSX reset
+  every n frames), DUMP_VRAM (VRAM, the registers and a log of the BIOS
+  VRAM calls copied to spare GVRAM every frame; the copy costs about half
+  a frame, so the game runs late while it is on), PROFILE (the Z80 PC at
+  every VRTC, a ring at GVRAM C200h).

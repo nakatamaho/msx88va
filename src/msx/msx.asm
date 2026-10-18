@@ -274,6 +274,20 @@ vrtc:		push	bp
 		push	cs
 		pop	ds
 		inc	word [frames]
+%ifdef PROFILE					; vaeg tests: the Z80 PC at
+		mov	es,[gvram_seg]		; each VRTC (FFFFh: native),
+		mov	di,[prof_n]		; a ring of 4096 words at GVRAM
+		and	di,0fffh		; C200h
+		shl	di,1
+		mov	ax,0ffffh
+		cmp	word [bp + 4],Z80SEG
+		jne	.prof
+		mov	ax,[bp + 2]
+.prof:		mov	[es:0c200h + di],ax
+		inc	word [prof_n]
+		mov	ax,[prof_n]
+		mov	[es:0c000h],ax
+%endif
 		call	kbd_scan
 		cmp	word [bp + 4],Z80SEG	; a reset only from the Z80 code
 		jne	.no_help
@@ -369,6 +383,10 @@ dump_vram:	push	ds
 		ret
 
 log_n		dw	0
+%endif
+
+%ifdef PROFILE
+prof_n		dw	0
 %endif
 
 ; With the VDP's interrupt line active (frame flag and R1 bit 5) and the
@@ -2055,11 +2073,13 @@ flags_compute:	push	es
 		shl	bx,1
 .h:		shl	bx,cl
 		mov	[f_h],bx
-		; the sprite list
+		; the list of the sprites on picture lines, in order: BX the
+		; sprite number, DI the list index
 		mov	ax,VRAMSEG
 		mov	es,ax
 		mov	si,[r_sat]
-		xor	bx,bx			; BX: sprite number
+		xor	bx,bx
+		xor	di,di
 .list:		cmp	bx,32
 		jae	.listed
 		mov	al,[es:si]
@@ -2070,24 +2090,32 @@ flags_compute:	push	es
 		cmp	al,0e0h
 		jae	.ny
 		xor	ah,ah
-.ny:		shl	bx,1
-		mov	[f_y + bx],ax
+.ny:		mov	dx,ax			; on a picture line?
+		add	dx,[f_h]
+		jle	.skip
+		cmp	ax,192
+		jge	.skip
+		mov	[f_num + di],bl
+		shl	di,1
+		mov	[f_y + di],ax
 		mov	al,[es:si + 1]
 		xor	ah,ah
 		test	byte [es:si + 3],80h	; early clock
 		jz	.nx
 		sub	ax,32
-.nx:		mov	[f_x + bx],ax
-		shr	bx,1
+.nx:		mov	[f_x + di],ax
+		shr	di,1
 		mov	al,[es:si + 2]
 		test	byte [spr_mode],2
 		jz	.np
 		and	al,0fch
-.np:		mov	[f_pat + bx],al
-		add	si,4
+.np:		mov	[f_pat + di],al
+		inc	di
+.skip:		add	si,4
 		inc	bx
 		jmp	.list
-.listed:	mov	[f_n],bl
+.listed:	mov	ax,di
+		mov	[f_n],al
 		mov	al,bl
 		cmp	al,32
 		jb	.last
@@ -2134,7 +2162,9 @@ flags_compute:	push	es
 		jne	.inc
 		cmp	byte [f_fifth + si],0ffh
 		jne	.inc
-		mov	ah,[f_j]
+		mov	bl,[f_j]
+		xor	bh,bh
+		mov	ah,[f_num + bx]
 		mov	[f_fifth + si],ah
 .inc:		cmp	al,0ffh
 		je	.cn
@@ -2199,61 +2229,85 @@ collide_j:	mov	byte [f_i],0
 		jmp	.il
 .ret:		ret
 
-; Sprites f_i and f_j on picture row SI. Keeps SI.
+; Sprites f_i and f_j on picture row SI, a whole row at once: each row as a
+; 32-bit mask (column 0 in the top bit, dots doubled when magnified), the
+; right one shifted by the X difference, ANDed, clipped to columns 0-255.
+; Sets f_hit. Keeps SI.
 collide_row:	push	si
 		mov	al,[f_i]
-		call	row_bits
-		mov	[f_wi],ax
+		call	row_mask
+		mov	[f_mi],ax
+		mov	[f_mi + 2],bx
 		mov	[f_xi],dx
-		or	ax,ax
+		or	ax,bx
 		jz	.ret
 		mov	al,[f_j]
-		call	row_bits
-		mov	[f_wj],ax
-		mov	[f_xj],dx
-		or	ax,ax
+		call	row_mask		; BX:AX = J's mask, DX = its X
+		mov	cx,ax
+		or	cx,bx
 		jz	.ret
-		mov	ax,[f_xi]		; columns max(xi, xj, 0) ..
-		cmp	ax,dx			; min(xi, xj) + h, at most 256
-		jge	.c0
-		mov	ax,dx
-.c0:		or	ax,ax
-		jns	.c0b
-		xor	ax,ax
-.c0b:		mov	dx,[f_xi]
-		cmp	dx,[f_xj]
-		jle	.c1
-		mov	dx,[f_xj]
-.c1:		add	dx,[f_h]
-		cmp	dx,256
-		jle	.c1b
-		mov	dx,256
-.c1b:		mov	cl,[f_mag]
-.col:		cmp	ax,dx
-		jge	.ret
-		mov	bx,ax			; dot of I
-		sub	bx,[f_xi]
-		shr	bx,cl
-		mov	si,[f_wi]
-		xchg	cx,bx
-		shl	si,cl
-		xchg	cx,bx
-		test	si,8000h
-		jz	.cnext
-		mov	bx,ax			; dot of J
-		sub	bx,[f_xj]
-		shr	bx,cl
-		mov	si,[f_wj]
-		xchg	cx,bx
-		shl	si,cl
-		xchg	cx,bx
-		test	si,8000h
-		jz	.cnext
+		mov	di,[f_mi]		; DI:SI = I's mask
+		mov	si,[f_mi + 2]
+		mov	cx,[f_xi]
+		cmp	cx,dx			; the left one in DI:SI, at CX
+		jle	.order
+		xchg	di,ax
+		xchg	si,bx
+		xchg	cx,dx
+.order:		sub	dx,cx			; DX: X difference, 0-31
+		jz	.and
+.shift:		shr	bx,1
+		rcr	ax,1
+		dec	dx
+		jnz	.shift
+.and:		and	ax,di			; BX:AX = the dots of both
+		and	bx,si
+		or	cx,cx			; columns left of the picture
+		jns	.right
+		neg	cx
+.lclip:		shl	ax,1
+		rcl	bx,1
+		loop	.lclip
+		jmp	.test
+.right:		mov	dx,256			; columns 256 - X .. 31 cleared
+		sub	dx,cx
+		cmp	dx,32
+		jae	.test
+		mov	cx,32
+		sub	cx,dx
+.rclip:		shr	bx,1
+		rcr	ax,1
+		loop	.rclip
+.test:		or	ax,bx
+		jz	.ret
 		mov	byte [f_hit],1
-		jmp	.ret
-.cnext:		inc	ax
-		jmp	.col
 .ret:		pop	si
+		ret
+
+; Sprite AL on picture row SI: BX:AX = its row as a 32-bit mask (BX the
+; left 16 columns), DX = its X. Keeps SI.
+row_mask:	call	row_bits		; AX: the pattern row, AH left
+		cmp	byte [f_mag],0
+		jne	.mag
+		mov	bx,ax
+		xor	ax,ax
+		ret
+.mag:		push	dx			; each dot doubled
+		push	ax
+		mov	bl,ah
+		xor	bh,bh
+		shl	bx,1
+		mov	bx,[dbl + bx]
+		xchg	bl,bh
+		pop	ax
+		push	bx
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[dbl + bx]
+		xchg	al,ah
+		pop	bx
+		pop	dx
 		ret
 
 ; Sprite AL on picture row SI: AX = its pattern row (left byte high; the
@@ -2601,11 +2655,10 @@ f_h		dw	0
 f_r0		dw	0
 f_r1		dw	0
 f_rend		dw	0
-f_wi		dw	0
-f_wj		dw	0
+f_mi		dw	0, 0
 f_xi		dw	0
-f_xj		dw	0
 f_pat		times	32 db 0
+f_num		times	32 db 0
 f_cnt		times	192 db 0
 f_fifth		times	192 db 0
 f_n		db	0
