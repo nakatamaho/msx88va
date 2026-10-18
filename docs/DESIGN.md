@@ -52,3 +52,60 @@ VA2):
   title's own loops by patch) become CALLN calls that copy in native code.
 - vaeg traps on the 8-bit port as the VA2 does, but its trap is about
   half as expensive as the hardware's.
+
+## M02: the MSX machine (`src/msx/msx.asm`)
+
+- Memory (paragraphs): code 2000h, C-BIOS main ROM 2400h, logo ROM 2C00h,
+  cartridge 3000h (slot 1 from page 1), the Z80's 64 KiB 4000h, slot-3 RAM
+  5000h, VRAM 6000h, an FFh page 6400h, native stack 6800h. The IPL
+  moves itself below 2000h, then loads past 64 KiB without crossing a
+  64 KiB physical boundary in one read.
+- Slots: an A8h write copies each changed page into the Z80 segment (16
+  KiB), after copying a RAM page back to its store. C-BIOS's CHKRAM search
+  is patched out (with copied pages every slot looks writable): slot 3 in
+  pages 2 and 3. The printer entries are patched to "not ready" (ports
+  90h and 91h are outside the trap). `tools/cbios.py` lists the patches.
+- Trap handler: OUT (n),A and IN A,(n) go through a table by port;
+  the ED forms through a decoder (IN r,(C) sets S, Z, P; the block forms
+  set Z from B; a repeat runs to B = 0 in one trap).
+- C-BIOS's FILVRM, LDIRMV and LDIRVM start with CALLN 71h (build-time
+  patch); the native handler does the whole block and the RET, and
+  injects a pending interrupt as the trap handler does. On the way out, and in the
+  VRTC handler, the Z80 interrupt is injected while the VDP's line is
+  active (frame flag and R1 bit 5) and the Z80 has interrupts enabled.
+- VDP: VRAM with auto-increment and read-ahead, registers, status (frame
+  flag only). Rendering in the VRTC handler, two character rows a frame
+  into 320x200 4-bit graphics (picture at dots 32-287, lines 4-195); a
+  pass restarts when VRAM or a register changed during the last one.
+  Graphics I, II and text; no sprites, no multicolour yet.
+- PSG: written through to the OPN's SSG (ports 44h/45h); tone, noise and
+  envelope periods scaled by 62400/111861 for the SSG's 998.4 kHz clock;
+  register 7's port direction bits keep the VA's. Register 14 reads BFh.
+- PPI: slot select, port C, bit set/reset; no keys yet. ESC on the VA
+  keyboard restarts the machine.
+- HALT: a native interrupt ends a compatible-mode HALT and the IRET
+  resumes after it (VA and VA2, ../pacman M01). vaeg kept the core halted
+  until its fix in nakatamaho/vaeg PR #42 (M118, cc0d31fc); older vaeg
+  builds hang in C-BIOS's first wait.
+
+Test cartridge (`src/cart/m02cart.asm`): screen 2 colour bars, then 768
+bytes x 10 written to VRAM by OTIR, LDIRVM and an OUT (98h),A loop, in
+frames:
+
+| | OTIR | LDIRVM | OUT |
+|---|---|---|---|
+| PC-88VA2, one trap a byte (2026-10-17) | 141 | 146 | 86 |
+| vaeg, one trap a byte | 31 | 33 | 20 |
+| vaeg, OTIR in one trap, LDIRVM by CALLN | 5 | 1 | 20 |
+| PC-88VA, OTIR in one trap, LDIRVM by CALLN (2026-10-18) | 7 | 5 | 98 |
+| PC-88VA2, OTIR in one trap, LDIRVM by CALLN (2026-10-18) | 3 | 4 | 66 |
+
+On the VA2 that is 190 us a byte for OUT and 310 us for OTIR and OUTI
+(the screen being redrawn takes part of it); on the VA, 213 us for OUT,
+and 15 us (OTIR) and 11 us (LDIRVM) once the block is done in one go. With one trap a VRAM
+byte the PC-88VA2 took several minutes to reach the cartridge (C-BIOS's
+start and logo fill and copy VRAM by FILVRM and LDIRVM); with the CALLN
+routines the PC-88VA and PC-88VA2 reach the colour bars about 5 s after a
+reset. C-BIOS 0.29a's BEEP makes no sound
+(it only writes "BEEP" to the debug device), so the PSG is still
+untested.
