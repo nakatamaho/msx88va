@@ -2158,26 +2158,33 @@ flags_compute:	push	es
 		jb	.last
 		mov	al,31
 .last:		mov	[f_last],al
-		push	ds			; counts 0, fifth numbers FFh
+		push	ds
 		pop	es
-		mov	di,f_cnt
-		xor	ax,ax
-		mov	cx,96
-		rep	stosw
-		mov	di,f_fifth
-		dec	ax
-		mov	cx,96
-		rep	stosw
 		mov	byte [f_hit],0
-		; sprite J against the earlier ones, then its lines counted
-		mov	byte [f_j],0
-.jl:		mov	al,[f_j]
+		mov	byte [f_five],0ffh
+		cmp	byte [f_n],5		; five or more: the fifth sprite
+		jb	.pairs
+		call	fifth_sprite
+.pairs:		mov	byte [f_j],1		; each sprite against the earlier
+.jl:		mov	al,[f_j]		; ones, to the first collision
 		cmp	al,[f_n]
-		jae	.result
-		xor	ah,ah
+		jae	.done
+		call	sprite_rows
+		jge	.jnext
+		call	collide_j
+		cmp	byte [f_hit],0
+		jne	.done
+.jnext:		inc	byte [f_j]
+		jmp	.jl
+.done:		pop	es
+		ret
+
+; Sprite AL's rows on the picture: f_r0 = max(y, 0), f_r1 = min(y + h,
+; 192); flags as CMP f_r0, f_r1 (GE: none). DS = CS.
+sprite_rows:	xor	ah,ah
 		mov	bx,ax
 		shl	bx,1
-		mov	ax,[f_y + bx]		; rows max(y, 0) .. min(y + h, 192)
+		mov	ax,[f_y + bx]
 		mov	dx,ax
 		add	dx,[f_h]
 		or	ax,ax
@@ -2186,39 +2193,92 @@ flags_compute:	push	es
 .r0:		cmp	dx,192
 		jle	.r1
 		mov	dx,192
-.r1:		cmp	ax,dx
-		jge	.jnext
-		mov	[f_r0],ax
+.r1:		mov	[f_r0],ax
 		mov	[f_r1],dx
-		cmp	byte [f_hit],0
-		jne	.count
-		call	collide_j
-.count:		mov	si,[f_r0]
-.cl:		mov	al,[f_cnt + si]
-		cmp	al,4
-		jne	.inc
-		cmp	byte [f_fifth + si],0ffh
-		jne	.inc
-		mov	bl,[f_j]
-		xor	bh,bh
-		mov	ah,[f_num + bx]
-		mov	[f_fifth + si],ah
-.inc:		cmp	al,0ffh
-		je	.cn
-		inc	byte [f_cnt + si]
-.cn:		inc	si
+		cmp	ax,dx
+		ret
+
+; f_five: the number of the fifth sprite on the first line covered by
+; five, from a difference array of the rows each sprite covers. DS = ES =
+; CS.
+fifth_sprite:	mov	di,f_diff
+		xor	ax,ax
+		mov	cx,193
+		rep	stosw
+		xor	bx,bx			; +1 at the first row, -1 after
+.d:		mov	al,bl
+		push	bx
+		call	sprite_rows
+		jge	.dn
+		mov	si,ax
+		shl	si,1
+		inc	word [f_diff + si]
+		mov	si,dx
+		shl	si,1
+		dec	word [f_diff + si]
+.dn:		pop	bx
+		inc	bl
+		cmp	bl,[f_n]
+		jb	.d
+		mov	si,f_diff		; the first line with five
+		xor	dx,dx
+		xor	cx,cx			; CX: the line
+.l:		lodsw
+		add	dx,ax
+		cmp	dx,5
+		jge	.line
+		inc	cx
+		cmp	cx,192
+		jb	.l
+		ret
+.line:		xor	bx,bx			; the fifth sprite covering line CX
+		mov	ah,0
+.s:		push	ax
+		mov	al,bl
+		push	bx
+		push	cx
+		call	sprite_rows
+		pop	cx
+		pop	bx
+		pop	ax
+		cmp	cx,[f_r0]
+		jl	.sn
+		cmp	cx,[f_r1]
+		jge	.sn
+		inc	ah
+		cmp	ah,5
+		jne	.sn
+		mov	al,[f_num + bx]
+		mov	[f_five],al
+		ret
+.sn:		inc	bl
+		cmp	bl,[f_n]
+		jb	.s
+		ret
+
+; AL = the number of sprites before f_j covering row SI. Keeps SI.
+rank_j:		push	cx
+		xor	cx,cx
+		xor	bx,bx
+.k:		cmp	bl,[f_j]
+		jae	.done
+		push	bx
+		mov	al,bl
+		push	word [f_r0]
+		push	word [f_r1]
+		call	sprite_rows
+		cmp	si,[f_r0]
+		jl	.no
 		cmp	si,[f_r1]
-		jb	.cl
-.jnext:		inc	byte [f_j]
-		jmp	.jl
-.result:	mov	si,f_fifth		; the first line with a fifth
-		mov	cx,192
-.fl:		lodsb
-		cmp	al,0ffh
-		jne	.found
-		loop	.fl
-.found:		mov	[f_five],al
-		pop	es
+		jge	.no
+		inc	cx
+.no:		pop	word [f_r1]
+		pop	word [f_r0]
+		pop	bx
+		inc	bl
+		jmp	.k
+.done:		mov	al,cl
+		pop	cx
 		ret
 
 ; Sprite f_j against sprites 0 .. f_j - 1 on rows f_r0 .. f_r1 - 1; sets
@@ -2254,9 +2314,12 @@ collide_j:	mov	byte [f_i],0
 		jge	.inext
 		mov	si,ax
 		mov	[f_rend],dx
-.row:		cmp	byte [f_cnt + si],4	; J not shown on this line
+.row:		cmp	byte [f_n],5		; with five or more, J must be one
+		jb	.shown			; of the first four on the line
+		call	rank_j
+		cmp	al,4
 		jae	.rnext
-		call	collide_row
+.shown:		call	collide_row
 		cmp	byte [f_hit],0
 		jne	.ret
 .rnext:		inc	si
@@ -2688,12 +2751,11 @@ f_mi		dw	0, 0
 f_xi		dw	0
 f_pat		times	32 db 0
 f_num		times	32 db 0
-f_cnt		times	192 db 0
-f_fifth		times	192 db 0
+f_diff		times	193 dw 0
 f_n		db	0
 f_last		db	0
 f_hit		db	0
-f_five		db	0ffh
+f_five		db	0ffh			; FFh: no fifth sprite
 f_dirty		db	1
 f_mag		db	0
 f_i		db	0

@@ -113,13 +113,11 @@ compatible-mode timing is not measured. Confirm every gain on the VA
 
 ## 4. Candidates, by expected gain
 
-1. **`sprite_flags` (13%).** Recomputed every frame because the SAT
-   changes every frame. Options: compute only when the Z80 reads the
-   status register and only once a frame (`vdp_stat_r`, `h_rdvdp`);
-   keep per-sprite row masks between frames and redo only moved
-   sprites; skip collision when no two visible boxes overlap (already
-   cheap) and, above all, avoid the per-line counting when fewer than
-   five sprites are visible (the fifth flag cannot be set then).
+1. **`sprite_flags` (13%).** Recomputed whenever the SAT changes. Done:
+   the per-line counting is skipped below five visible sprites and
+   replaced by a difference array above. Left: the pair loop with many
+   sprites (sort by Y, or keep per-sprite row masks and redo only moved
+   sprites); computing only when the status is read.
 2. **`sprite_step` (7%).** `sprite_table` rewrites all 32 descriptors
    every frame and switches port 153h twice. Rewrite only descriptors
    whose SAT entry changed (compare with a shadow), and stop at the first
@@ -152,7 +150,28 @@ compatible-mode timing is not measured. Confirm every gain on the VA
 | Antarctic Adventure (16 KiB) | 92 | 0 | its own VRAM routines: copy `LD A,(HL); OUT (98h),A; INC HL; DEC BC; LD A,B; OR C; JR NZ` (44E6h), fill `LD A,H; OUT (98h),A; DEC BC; LD A,B; OR C; JR NZ` (44FAh), run `OUT (98h),A; PUSH HL; POP HL; DJNZ` (456Ah), address set-up `LD A,E; OUT (99h),A; LD A,D; OUT (99h),A` (48C9h) |
 
 At ~200 us a trap these two need 10 and 18 ms a frame on the hardware:
-half speed or worse. vaeg hides it (cheap traps).
+half speed or worse. vaeg hides the trap cost (one trap is ~480 cycles
+there: 20 to enter, ~400 in the handler, ~56 to return).
+
+**Star Force is slow even in vaeg (maintainer, 2026-10-18).** It never
+idles (the Z80 is at its OUT routine at 578 of 600 VRTCs), so every cycle
+taken from it slows the game. VRTC handler while it plays, cycles:
+
+| Part | Calm frame | Scrolling frame |
+|---|---|---|
+| `kbd_scan` | 5 400 | 5 400 |
+| `render_step` | 7 700 | up to 59 000 (64 Graphics II cells at ~800) |
+| `sprite_step` | 12 100 | 12 100 |
+| `sprite_flags` | 95 (unchanged SAT) | ~24 000 (many sprites) |
+| total | ~44 000 | up to ~84 000 (60% of the frame) |
+
+plus ~47 traps x ~480 = ~23 000. The biggest single item is the cell
+renderer during scrolling: make `tile_g2` cheaper (skip the colour-pair
+lookup when a line's colour byte equals the previous line's, unroll,
+precompute per-colour expansion) and consider a smaller `MAX_TILES`
+(64 now) traded against display lag. The fifth-sprite search already
+uses a difference array (2026-10-18); the remaining flag cost is the
+pair loop with many sprites.
 
 **Proposed: continue the Z80 in a native interpreter at a trap.** The
 loops above have many shapes, so matching each is fragile. Instead, at an
