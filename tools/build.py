@@ -49,6 +49,8 @@ def main() -> int:
     parser.add_argument("--cbios", type=Path, default=cbios.default_source(),
                         help="zip or directory with C-BIOS 0.29a (default: $MSX_CBIOS)")
     parser.add_argument("--cart", type=Path, help="cartridge ROM, 8, 16 or 32 KiB")
+    parser.add_argument("--define", action="append", default=[],
+                        help="NASM define for src/msx/msx.asm (tests), e.g. TEST_RESET=1300")
     parser.add_argument("--output", type=Path, default=d88.REPO / "build/msx.d88")
     args = parser.parse_args()
     if args.cbios is None:
@@ -64,7 +66,7 @@ def main() -> int:
             raise SystemExit("error: the cartridge must be 8, 16 or 32 KiB")
     pages = len(cart) // PAGE
     sectors = d88.build_boot_disk(d88.REPO / "src/msx/msx.asm", args.output, "MSX88VA",
-                                  defines=[f"CART_PAGES={pages}"],
+                                  defines=[f"CART_PAGES={pages}", *args.define],
                                   append=main_rom + logo_rom + cart)
     digest = hashlib.sha256(args.output.read_bytes()).hexdigest()
     print(f"{args.output}: MSX, C-BIOS with {len(cbios.PATCHES)} patches, "
