@@ -109,3 +109,28 @@ routines the PC-88VA and PC-88VA2 reach the colour bars about 5 s after a
 reset. C-BIOS 0.29a's BEEP makes no sound
 (it only writes "BEEP" to the debug device), so the PSG is still
 untested.
+
+## M03: BIOS calls, input, changed cells, sprites
+
+- C-BIOS's SETWRT, SETRD, WRTVRM, RDVRM, WRTVDP, WRTPSG, RDPSG, RDVDP,
+  SNSMAT and the interrupt's keyboard scan also start with CALLN 71h
+  (16 patches in all, `tools/cbios.py`); `bios_table` in
+  `src/msx/msx.asm` maps each address to its handler. WRTVDP and the
+  keyboard scan continue in C-BIOS after the replaced I/O part.
+- Keyboard: every VRTC reads the VA matrix (ports 00h-0Eh) and maps it to
+  MSX rows 0-10 (`key_map`, after vaeg's `io/serial.c`); the cursor keys,
+  SPACE or Z and X are also joystick port 1 (PSG register 14). HELP
+  restarts the machine (ESC is an MSX key).
+- Rendering redraws only changed cells: VRAM writes flag the pattern,
+  colour or name row they hit; a pass compares each cell's name with the
+  one last drawn there; at most 64 cells a frame. A register change that
+  affects the cells redraws everything.
+- Sprites are the TSP's hardware sprites in monochrome mode: descriptors
+  at TVRAM 7E00h, images from TVRAM 1000h, MSX sprite i on descriptor i.
+  Patterns are converted when written, dots doubled (the TSP counts 640
+  across); the descriptors are rebuilt from the attribute table every
+  VRTC. Sizes 8 and 16, magnified or not, the early clock bit. Not done:
+  fifth-sprite and collision flags, clipping to the picture, the
+  four-a-line limit.
+- Test cartridge `src/cart/m03cart.asm`: PSG scale by OUT and by WRTPSG,
+  the key matrix and GTSTCK/GTTRIG, nine 16x16 sprites, one moving.

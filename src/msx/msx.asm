@@ -269,6 +269,7 @@ vrtc:		push	bp
 		jmp	0ffffh:0000h
 .no_help:	or	byte [vstatus],80h	; the frame flag
 		call	render_step
+		call	sprite_step
 		cmp	word [bp + 4],Z80SEG
 		jne	.eoi
 		call	try_inject
@@ -745,12 +746,16 @@ vdp_ctrl_w:	cmp	byte [vfirst],0
 set_vreg:	mov	ah,[vregs + bx]
 		mov	[vregs + bx],al
 		xor	ah,al
-		and	ah,[vreg_cells + bx]
+		test	ah,[vreg_sprites + bx]
+		jz	.cells
+		mov	byte [spr_all],1
+.cells:		and	ah,[vreg_cells + bx]
 		jz	.ret
 		mov	byte [vregchg],1
 .ret:		ret
 
 vreg_cells	db	02h, 58h, 0fh, 0ffh, 07h, 00h, 00h, 0ffh
+vreg_sprites	db	00h, 43h, 00h, 00h, 00h, 7fh, 07h, 00h
 
 ; VRAM address BX was written: flag its pattern, colour or name row for
 ; the renderer. Keeps every register. DS = CS.
@@ -784,11 +789,20 @@ mark_addr:	push	ax
 .name:		mov	ax,bx
 		sub	ax,[r_name]
 		cmp	ax,[r_ncells]
-		jae	.ret
+		jae	.spt
 		xor	dx,dx
 		div	word [r_cols]
 		mov	bx,ax
 		mov	byte [row_dirty + bx],1
+		pop	bx
+		push	bx
+.spt:		mov	ax,bx
+		sub	ax,[r_spt]
+		cmp	ax,800h
+		jae	.ret
+		shr	ax,3
+		mov	bx,ax
+		mov	byte [spt_dirty + bx],1
 .ret:		pop	bx
 		pop	dx
 		pop	ax
@@ -852,6 +866,7 @@ mark_span:	pusha
 		xor	dx,dx
 		div	word [r_cols]
 		push	ax
+		; (rows)
 		mov	ax,cx
 		xor	dx,dx
 		div	word [r_cols]
@@ -859,7 +874,15 @@ mark_span:	pusha
 		pop	ax
 		mov	bx,row_dirty
 		call	.fill
-.done:		pop	es
+.done:		mov	ax,[r_spt]		; sprite patterns
+		mov	dx,800h
+		call	.clip
+		jc	.end
+		shr	ax,3
+		shr	dx,3
+		mov	bx,spt_dirty
+		call	.fill
+.end:		pop	es
 		popa
 		ret
 ; The table at AX, DX bytes long, against SI..DI: AX, DX = first and last
@@ -1563,6 +1586,281 @@ tile_text:	push	si
 		pop	si
 		ret
 
+; ---------------------------------------------------------------------------
+; Sprites, on the TSP's hardware sprites: monochrome mode, the 32
+; descriptors at TVRAM 7E00h (the PC-88VA's conventional table), MSX
+; sprite i on descriptor i (lower numbers in front in both). Each 8x8 MSX
+; pattern written is converted into its part of a TSP image for the sprite
+; size in use, its dots doubled (the TSP counts 640 dots across); the
+; descriptors are rewritten every frame from the attribute table. Not yet:
+; the fifth-sprite and collision flags, clipping to the 256x192 picture.
+
+SPR_IMG		equ	1000h		; TVRAM offset of the images (16 KiB)
+SPR_TABLE	equ	7e00h		; TVRAM offset of the descriptors
+
+; In the VRTC handler, DS = CS.
+sprite_step:	mov	dx,0153h		; TVRAM at A0000h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,01h
+		out	dx,al
+		mov	ax,0a000h
+		mov	es,ax
+		cmp	byte [spr_all],0
+		je	.pats
+		mov	byte [spr_all],0
+		call	sprite_setup
+		push	es
+		push	cs
+		pop	es
+		mov	di,spt_dirty
+		mov	ax,0101h
+		mov	cx,128
+		rep	stosw
+		pop	es
+.pats:		call	sprite_patterns
+		call	sprite_table
+		pop	ax			; GVRAM again
+		mov	dx,0153h
+		out	dx,al
+		ret
+
+; From R1 (SIZE, MAG), R5 and R6.
+sprite_setup:	mov	al,[vregs + 6]
+		and	ax,7
+		shl	ax,11
+		mov	[r_spt],ax
+		mov	al,[vregs + 5]
+		and	ax,7fh
+		shl	ax,7
+		mov	[r_sat],ax
+		mov	bl,[vregs + 1]
+		and	bx,3			; SIZE * 2 + MAG
+		mov	[spr_mode],bl
+		mov	al,[spr_xsize + bx]
+		mov	[spr_xs],al
+		mov	al,[spr_ysize + bx]
+		mov	[spr_ys],al
+		mov	al,[spr_ishift + bx]
+		mov	[spr_is],al
+		ret
+
+; Image geometry by mode (8x8, 8x8 magnified, 16x16, 16x16 magnified):
+; XSIZE, YSIZE, log2 of the image's bytes.
+spr_xsize	db	0, 0, 0, 1
+spr_ysize	db	1, 3, 3, 7
+spr_ishift	db	5, 6, 6, 8
+
+; Convert the written patterns. ES = TVRAM.
+sprite_patterns:
+		xor	bx,bx
+.next:		cmp	byte [spt_dirty + bx],0
+		jne	.one
+.skip:		inc	bl
+		jnz	.next
+		ret
+.one:		mov	byte [spt_dirty + bx],0
+		push	bx
+		call	convert_pattern
+		pop	bx
+		jmp	.skip
+
+; Pattern BX into its image part. ES = TVRAM, DS = CS.
+convert_pattern:
+		push	ds
+		mov	si,bx			; SI: the pattern in VRAM
+		shl	si,3
+		add	si,[r_spt]
+		mov	al,[spr_mode]
+		mov	cx,VRAMSEG
+		mov	ds,cx
+		cmp	al,1
+		jb	.m0
+		je	.m1
+		cmp	al,2
+		je	.m2
+		; 16x16 magnified: quadrant k = p & 3 at row (k & 1) * 16, byte
+		; (k >> 1) * 4 of image p >> 2 (256 bytes, 8 bytes a row)
+		mov	di,bx
+		and	di,0fch
+		shl	di,6
+		mov	ax,bx
+		and	ax,1
+		shl	ax,7
+		add	di,ax
+		mov	ax,bx
+		and	ax,2
+		shl	ax,1
+		add	di,ax
+		add	di,SPR_IMG
+		mov	cx,8
+.m3l:		call	quad
+		mov	[es:di],dx
+		mov	[es:di + 2],ax
+		mov	[es:di + 8],dx
+		mov	[es:di + 10],ax
+		add	di,16
+		loop	.m3l
+		pop	ds
+		ret
+.m0:		mov	di,bx			; 8x8: 32 bytes an image
+		shl	di,5
+		add	di,SPR_IMG
+		mov	cx,8
+.m0l:		lodsb
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[cs:dbl + bx]
+		stosw
+		xor	ax,ax
+		stosw
+		loop	.m0l
+		pop	ds
+		ret
+.m1:		mov	di,bx			; 8x8 magnified: 64 bytes, rows doubled
+		shl	di,6
+		add	di,SPR_IMG
+		mov	cx,8
+.m1l:		call	quad
+		mov	[es:di],dx
+		mov	[es:di + 2],ax
+		mov	[es:di + 4],dx
+		mov	[es:di + 6],ax
+		add	di,8
+		loop	.m1l
+		pop	ds
+		ret
+.m2:		mov	di,bx			; 16x16: quadrant k at row (k & 1) * 8,
+		and	di,0fch			; byte (k >> 1) * 2 of image p >> 2
+		shl	di,4
+		mov	ax,bx
+		and	ax,1
+		shl	ax,5
+		add	di,ax
+		mov	ax,bx
+		and	ax,2
+		add	di,ax
+		add	di,SPR_IMG
+		mov	cx,8
+.m2l:		lodsb
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[cs:dbl + bx]
+		mov	[es:di],ax
+		add	di,4
+		loop	.m2l
+		pop	ds
+		ret
+
+; The pattern byte at DS:SI, SI + 1, each dot made four: DX = the left
+; 16 dots, AX = the right 16, as bytes in display order.
+quad:		lodsb
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	bx,[cs:dbl + bx]	; BL: left 8 dots, BH: right 8
+		push	bx
+		mov	al,bl
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	dx,[cs:dbl + bx]
+		pop	bx
+		mov	al,bh
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[cs:dbl + bx]
+		ret
+
+; The 32 descriptors from the attribute table. ES = TVRAM, DS = CS.
+sprite_table:	mov	di,SPR_TABLE
+		mov	si,[r_sat]
+		mov	cx,32
+		mov	dl,0			; DL: 1 after a Y of D0h
+		test	byte [vregs + 1],40h	; display off: no sprites
+		jnz	.spr
+		mov	dl,1
+.spr:		or	dl,dl
+		jnz	.off
+		push	ds
+		mov	ax,VRAMSEG
+		mov	ds,ax
+		lodsw				; AL: Y, AH: X
+		mov	bx,ax
+		lodsw				; AL: pattern, AH: early clock, colour
+		pop	ds
+		cmp	bl,0d0h
+		je	.end
+		test	ah,0fh			; colour 0: nothing to show
+		jz	.off2
+		push	cx
+		push	ax
+		; Y: line Y + 1 of the picture, the top 32 lines negative
+		mov	al,bl
+		inc	al
+		cbw
+		cmp	al,0e0h
+		jae	.neg
+		xor	ah,ah
+.neg:		add	ax,PICTURE_Y
+		and	ax,1ffh
+		mov	cl,[spr_ys]
+		mov	ch,cl
+		shl	ch,2
+		or	ah,ch
+		or	ah,02h			; SW
+		stosw
+		; X: (GFX_X * 2 + x) * 2 dots, 32 dots left with the early clock
+		mov	al,bh
+		xor	ah,ah
+		pop	bx			; BL: pattern, BH: EC, colour
+		push	bx
+		test	bh,80h
+		jz	.x
+		sub	ax,32
+.x:		add	ax,GFX_X * 2
+		shl	ax,1
+		and	ax,3ffh
+		mov	cl,[spr_xs]
+		shl	cl,3
+		or	ah,cl
+		or	ah,04h			; MD: monochrome
+		stosw
+		; SPDA: the image's TSP word address
+		xor	bh,bh
+		test	byte [spr_mode],2
+		jz	.pat
+		shr	bl,2
+.pat:		mov	ax,bx
+		mov	cl,[spr_is]
+		shl	ax,cl
+		add	ax,SPR_IMG
+		shr	ax,1
+		stosw
+		pop	ax
+		mov	al,ah			; FG
+		and	al,0fh
+		shl	al,4
+		xor	ah,ah
+		stosw
+		pop	cx
+		jmp	.loop
+.end:		mov	dl,1
+.off:		add	si,4
+.off2:		xor	ax,ax			; SW = 0
+		stosw
+		stosw
+		stosw
+		stosw
+.loop:		dec	cx
+		jz	.ret
+		jmp	.spr
+.ret:		ret
+
 ; pairs[c] = (fgw xor bgw, bgw) for every colour byte c (fg high nibble).
 make_pairs:	push	es
 		push	cs
@@ -1814,6 +2112,8 @@ r_cols		dw	32
 r_start		dw	0
 r_text		dw	0, 0
 rpos		dw	0
+r_spt		dw	0
+r_sat		dw	0
 rdest		dw	0
 budget		dw	0
 psg		times	16 db 0
@@ -1834,6 +2134,11 @@ r_colshift	db	0
 rrow		db	0
 rcol		db	0
 any_dirty	db	0
+spr_all		db	1
+spr_mode	db	0
+spr_xs		db	0
+spr_ys		db	1
+spr_is		db	5
 any_pend	db	0
 backdrop	db	0
 psg_reg		db	0
@@ -1854,6 +2159,22 @@ pat_pend	times	768 db 0
 col_pend	times	768 db 0
 row_pend	times	24 db 0
 shadow		times	960 db 0
+spt_dirty	times	256 db 0
+; A byte's dots doubled, MSB first, as two bytes in display order.
+dbl:
+%assign b 0
+%rep 256
+ %assign w 0
+ %assign i 0
+ %rep 8
+  %if b & (1 << i)
+   %assign w w | (3 << (2 * i))
+  %endif
+  %assign i i + 1
+ %endrep
+		db	w >> 8, w & 0ffh
+ %assign b b + 1
+%endrep
 
 end_of_program:
 		times	CODE_BYTES - ($ - $$) db 0	; fails if the program is too large

@@ -27,6 +27,9 @@
 ;   2  input: the key matrix rows 0-10 (SNSMAT) now and ANDed since the
 ;      start (a key pressed once stays 0), GTSTCK 0 and 1, GTTRIG 0, 1
 ;      and 3, and a frame count, redrawn every frame
+;   3  sprites (16x16, during 2): eight boxes in colours 2-9 in a row
+;      at the top, a white one moving right below them; each box has its
+;      top-left 4x4 corner filled
 
 CHPUT:		equ	00a2h
 POSIT:		equ	00c6h
@@ -37,6 +40,13 @@ GTSTCK:		equ	00d5h
 GTTRIG:		equ	00d8h
 JIFFY:		equ	0fc9eh
 SEEN:		equ	0c000h		; 11 rows ANDed
+XPOS:		equ	0c010h
+WRTVDP:		equ	0047h
+WRTVRM:		equ	004dh
+LDIRVM:		equ	005ch
+RG1SAV:		equ	0f3e0h
+PATBAS:		equ	0f926h
+ATRBAS:		equ	0f928h
 
 		org	4000h
 		db	"AB"
@@ -101,8 +111,28 @@ seen_init:	ld	(hl),0ffh
 		djnz	seen_init
 		ld	hl,s_input
 		call	print
+		ld	a,(RG1SAV)		; 16x16 sprites
+		or	2
+		ld	b,a
+		ld	c,1
+		call	WRTVDP
+		ld	hl,box
+		ld	de,(PATBAS)
+		ld	bc,32
+		call	LDIRVM
+		ld	hl,sat
+		ld	de,(ATRBAS)
+		ld	bc,sat_end - sat
+		call	LDIRVM
 loop:		ld	b,1
 		call	frames
+		ld	hl,XPOS			; the moving sprite
+		inc	(hl)
+		ld	a,(hl)
+		ld	hl,(ATRBAS)
+		ld	de,8 * 4 + 1
+		add	hl,de
+		call	WRTVRM
 		ld	c,0			; rows 0-10
 row:		ld	h,4			; column 4, line 5 + row
 		ld	a,c
@@ -179,6 +209,25 @@ nibble:		and	0fh
 		jr	c,nibble_out
 		add	a,7
 nibble_out:	jp	CHPUT
+
+; 16x16: left bytes of rows 0-15, then right bytes.
+box:		db	0ffh, 0f0h, 0f0h, 0f0h, 80h, 80h, 80h, 80h
+		db	80h, 80h, 80h, 80h, 80h, 80h, 80h, 0ffh
+		db	0ffh, 01h, 01h, 01h, 01h, 01h, 01h, 01h
+		db	01h, 01h, 01h, 01h, 01h, 01h, 01h, 0ffh
+
+; Y, X, pattern, colour: eight in a row, one moving, the end.
+sat:		db	120, 16, 0, 2
+		db	120, 40, 0, 3
+		db	120, 64, 0, 4
+		db	120, 88, 0, 5
+		db	120, 112, 0, 6
+		db	120, 136, 0, 7
+		db	120, 160, 0, 8
+		db	120, 184, 0, 9
+		db	150, 0, 0, 15
+		db	0d0h, 0, 0, 0
+sat_end:
 
 ; Channel A periods (1.7897725 MHz / 16 / f): C4, E4, G4, C5.
 notes:		dw	428, 339, 285, 214
