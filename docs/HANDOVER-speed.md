@@ -1,0 +1,158 @@
+# Handover: making msx88va faster
+
+For an engineer or agent picking up the performance work. Read
+`AGENTS.md` first (invariants, build, vaeg test commands), then
+`docs/DESIGN.md` for the details referred to here. State as of
+2026-10-18, branch `topic/m04-games`.
+
+## 1. What runs where
+
+One frame of the PC-88VA (59.9 Hz) is shared between:
+
+1. **The Z80 program** (C-BIOS and the cartridge) in the uPD9002's
+   Z80-compatible mode, segment `Z80SEG` (`src/msx/msx.asm`).
+2. **Native V30 code**, entered three ways:
+   - the **VRTC interrupt** (`vrtc:`), once a frame: `kbd_scan`,
+     `render_step` (changed cells of the TMS9918 picture into GVRAM),
+     `sprite_step` (TSP hardware sprites: pattern conversion, the 32
+     descriptors), `sprite_flags` (fifth-sprite and collision flags),
+     then `try_inject` (the Z80's mode 1 interrupt);
+   - the **I/O trap** (`trap:`, INT 7Ch/7Dh) for each Z80 IN/OUT to
+     98h-99h and A0h-ABh;
+   - **CALLN 71h** (`bios_call:`) from the C-BIOS routines patched in
+     `tools/cbios.py` (VRAM block and single-byte access, VDP registers,
+     PSG, keyboard).
+
+Whatever native code takes is taken from the Z80.
+
+## 2. Measured costs
+
+| Path | PC-88VA2 | PC-88VA | vaeg (VA2 model) |
+|---|---|---|---|
+| One I/O trap, minimal handler | ~24 us | — | ~10 us |
+| One trapped OUT (98h),A, full handler, per byte | ~190 us | ~213 us | ~45 us |
+| OTIR in one trap, per byte | — | ~15 us | — |
+| LDIRVM by CALLN, per byte | — | ~11 us | — |
+| One CALLN round trip | ~8 us | — | ~6 us |
+
+(M01 and M02 tables in DESIGN; 768 bytes x 10 benchmarks of
+`src/cart/m02cart.asm`.) The VA's trap path is about 1.5 times the VA2's.
+
+**VRTC handler in vaeg**, VA2 model, Dig Dug playing, cycles of a
+141 560-cycle frame (measured with the debug harness `clock`, below):
+
+| Part | Cycles | Frame |
+|---|---|---|
+| `kbd_scan` | 5 400 | 4% |
+| `render_step` | 7 700 | 5% |
+| `sprite_step` | 9 400 | 7% |
+| `sprite_flags` | 18 000 (was 20 000-33 000) | 13% |
+| total | ~41 000 | 29% |
+
+**The two test games** (16 and 32 KiB, 1984) do no trapped I/O at all
+while playing: 20-35 CALLNs a frame. Both keep their main program in
+`JP $` and do the whole frame in the interrupt handler; in vaeg the Z80
+is back in `JP $` at every VRTC (`PROFILE`), so they run at 60 Hz there.
+
+**Open report (maintainer, vaeg interactive):** sprites "always blink",
+"about 30 fps". Not reproduced in headless vaeg runs: 20 consecutive
+frames all show every sprite, and the game logic keeps up. Ask for the
+game, which sprites, the blink rate, and vaeg settings (15/24 kHz,
+frame skip) before chasing it; then check on the hardware, where the
+budget is smaller.
+
+## 3. How to measure
+
+Build with `tools/build_dos.py --cart ROM` (private disk), assemble the
+program alone with a listing to get addresses:
+
+    nasm -f bin -DBASE=0x3000 -l msx.lst -o msx.bin src/msx/msx.asm
+
+The program runs at segment 3000h; label offsets are in column 2 of the
+listing. vaeg debug script (MS-DOS boot and the menu take ~1000 frames;
+`input-line` types text and Enter, e.g. `input-line 1` picks menu item 1,
+`input-line Z Z` contains a space for "push space"):
+
+    debug-script 1
+    limit-frame 2700
+    counter vrtc 3000:<vrtc>          # calls of a PC, whole run
+    wait-frame 1000
+    input-line 1
+    wait-frame 2200
+    wait-pc 3000:<vrtc> 1             # the next time this PC runs
+    capture pa1 registers             # 'clock' = CPU cycles so far
+    wait-pc 3000:<.eoi> 1
+    capture pb1 registers
+    exit
+
+Differences of `clock` between two captures give the cycles between two
+PCs. Counters over two runs (to frame A and to frame B) give calls per
+frame. Ids are lower-case, a capture must follow a `wait-pc`, and
+`--debug-script` cannot be combined with `--headless-input-script`.
+
+Build-time test options (`tools/build_dos.py --define ...`):
+
+- `PROFILE`: the Z80 PC at every VRTC, a ring of 4096 words at GVRAM
+  C200h (`capture id gvram`, the file's offset C200h; the count at
+  C000h). Shows whether the game finished its frame (PC in its idle
+  loop).
+- `DUMP_VRAM`: VRAM at GVRAM 8000h, the VDP registers at C000h, and a log
+  of the BIOS VRAM calls; costs about half a frame itself, so the game
+  runs late while it is on — do not judge timing with it.
+- `TEST_RESET=n`: an MSX reset every n frames.
+
+vaeg is not the hardware: its trap is about half as expensive and its
+compatible-mode timing is not measured. Confirm every gain on the VA
+(the slower model) with a benchmark cartridge that prints frame counts
+(`src/cart/m02cart.asm` style, JIFFY based).
+
+## 4. Candidates, by expected gain
+
+1. **`sprite_flags` (13%).** Recomputed every frame because the SAT
+   changes every frame. Options: compute only when the Z80 reads the
+   status register and only once a frame (`vdp_stat_r`, `h_rdvdp`);
+   keep per-sprite row masks between frames and redo only moved
+   sprites; skip collision when no two visible boxes overlap (already
+   cheap) and, above all, avoid the per-line counting when fewer than
+   five sprites are visible (the fifth flag cannot be set then).
+2. **`sprite_step` (7%).** `sprite_table` rewrites all 32 descriptors
+   every frame and switches port 153h twice. Rewrite only descriptors
+   whose SAT entry changed (compare with a shadow), and stop at the first
+   Y=D0h.
+3. **`kbd_scan` (4%).** Maps ~110 table entries every frame. Read the 15
+   VA ports, and remap only when they differ from the previous frame
+   (almost never).
+4. **`render_step`.** Bounded by MAX_TILES=64 cells a frame; fine for
+   these games. Full-screen scrollers will need a faster tile routine
+   (unrolled per mode, colour pairs cached per tile) or a larger budget
+   spread over frames.
+5. **Trapped OUT loops** (titles that write VRAM with their own
+   `OUT (98h),A` / `OUTI` loops): ~200 us a byte on the hardware. Make
+   the trap fast path minimal (98h data first, no table), and recognise
+   common loops at the trapped PC (unrolled OUTI runs, `OUTI; JP NZ`,
+   `LD A,(HL); OUT (98h),A; INC HL; DJNZ`) and do the whole loop in one
+   trap. A trap profiler (count traps by Z80 PC, show the top entries)
+   finds the sites.
+6. **Interrupt latency.** `try_inject` also runs at the end of a trap or
+   CALLN when the frame flag is pending, so a game that re-enables the
+   VDP interrupt gets it immediately (as on an MSX).
+
+## 5. Pitfalls already met
+
+- Native replacements must leave C-BIOS's exit registers and flags
+  (LDIRVM: HL = DE, DE = HL + BC, BC = 0098h, A = 0). A game drew text
+  one byte off before this was done.
+- Never BRKEM again from a handler entered from compatible mode (the V30
+  forbids nesting). The MSX reset edits the interrupt frame and IRETs to
+  0000h instead.
+- The VA's boot ROM BIOS work area overlaps the program once it runs; do
+  not call ROM BIOS routines (INT 83h, 8Fh) after start-up from the VRTC
+  handler.
+- TSP colours above the text/sprite boundary use palette set 1 (0320h):
+  both palette sets are written.
+- The trap compares only the low 8 bits of the port (M01, VA2).
+- vaeg before Rel.20261017 kept a compatible-mode HALT halted; use a
+  current vaeg.
+- Keep `vars`/`end_of_program` (the start-up snapshot for the MSX reset)
+  in mind when adding data: everything after `vars:` is restored at a
+  reset.
