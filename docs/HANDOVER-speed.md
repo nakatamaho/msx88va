@@ -54,12 +54,14 @@ while playing: 20-35 CALLNs a frame. Both keep their main program in
 `JP $` and do the whole frame in the interrupt handler; in vaeg the Z80
 is back in `JP $` at every VRTC (`PROFILE`), so they run at 60 Hz there.
 
-**Open report (maintainer, vaeg interactive):** sprites "always blink",
-"about 30 fps". Not reproduced in headless vaeg runs: 20 consecutive
-frames all show every sprite, and the game logic keeps up. Ask for the
-game, which sprites, the blink rate, and vaeg settings (15/24 kHz,
-frame skip) before chasing it; then check on the hardware, where the
-budget is smaller.
+**Blinking at reduced CPU speed.** With vaeg's CPU clock set to the
+PC-8801 standard speed the maintainer saw the sprites blink and the games
+run at about 30 fps; at the normal VA speed there is no blinking and the
+speed is normal (2026-10-18). So when the CPU is short, these games
+overrun the frame (their handler crosses a VRTC with the SAT half
+rewritten) and the symptom is sprite blinking and half speed. That is
+the failure to expect on slower hardware or heavier titles, and the
+reason to cut the VRTC handler's share.
 
 ## 3. How to measure
 

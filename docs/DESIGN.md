@@ -174,7 +174,10 @@ untested.
   one of the games playing: keyboard 5 400, changed cells 7 700, TSP
   sprites 9 400, sprite flags 18 000 (33 000 before the list of visible
   sprites only; the row test is a 32-bit AND), 41 000 in all.
-- Test options for `tools/build.py --define`: TEST_RESET=n (an MSX reset
+- vaeg (2026-10-18, maintainer): no sprite blinking and normal speed at
+  the VA's CPU speed; with vaeg's CPU clock at the PC-8801 standard speed
+  the sprites blinked and the games ran at about 30 fps (frames overrun).
+- Test options for `tools/build_dos.py --define`: TEST_RESET=n (an MSX reset
   every n frames), DUMP_VRAM (VRAM, the registers and a log of the BIOS
   VRAM calls copied to spare GVRAM every frame; the copy costs about half
   a frame, so the game runs late while it is on), PROFILE (the Z80 PC at
