@@ -97,9 +97,11 @@ frames:
 | PC-88VA2, one trap a byte (2026-10-17) | 141 | 146 | 86 |
 | vaeg, one trap a byte | 31 | 33 | 20 |
 | vaeg, OTIR in one trap, LDIRVM by CALLN | 5 | 1 | 20 |
+| PC-88VA, OTIR in one trap, LDIRVM by CALLN (2026-10-18) | 7 | 5 | 98 |
 
 On the VA2 that is 190 us a byte for OUT and 310 us for OTIR and OUTI
-(the screen being redrawn takes part of it). The PC-88VA2 run took
+(the screen being redrawn takes part of it); on the VA, 213 us for OUT,
+and 15 us (OTIR) and 11 us (LDIRVM) once the block is done in one go. The PC-88VA2 run took
 several minutes to reach the cartridge (C-BIOS start and logo), against
 about 9 s in vaeg; not yet explained. C-BIOS 0.29a's BEEP makes no sound
 (it only writes "BEEP" to the debug device), so the PSG is still
