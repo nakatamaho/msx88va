@@ -22,9 +22,11 @@
 ;
 ; MSX: an MSX1 in the uPD9002's Z80-compatible mode (docs/DESIGN.md).
 ;
-; Loaded by src/boot/ipl.asm to 2000:0000; the builder (tools/build.py)
-; appends the C-BIOS main ROM (MAIN_SEG), its logo ROM (LOGO_SEG) and an
-; optional cartridge (CART_SEG, CART_PAGES 16 KiB pages from page 1).
+; Loaded to BASE:0000 by MSX.COM (src/dos/msxcom.asm) under MS-DOS 4.0,
+; which also reads the C-BIOS main ROM to MAIN_SEG, its logo ROM to
+; LOGO_SEG and an optional cartridge to CART_SEG, patches C-BIOS
+; (tools/cbios.py), and sets cart_pages (16 KiB pages from page 1) in the
+; header below.
 ;
 ; The Z80 sees one 64 KiB segment (Z80SEG). Writes to port A8h copy the
 ; selected slots' pages into it; RAM pages are copied back to their slot-3
@@ -40,20 +42,22 @@
 		cpu	186
 		org	0
 
-%ifndef CART_PAGES
-CART_PAGES	equ	0
+%ifndef BASE
+BASE		equ	3000h		; where MSX.COM puts this program
 %endif
 
 CODE_BYTES	equ	4000h		; this program, padded
-MAIN_SEG	equ	2400h		; C-BIOS main ROM, 32 KiB
-LOGO_SEG	equ	2c00h		; C-BIOS logo ROM, 16 KiB
-CART_SEG	equ	3000h		; cartridge, up to 32 KiB
-Z80SEG		equ	4000h		; what the Z80 sees
-RAMSEG		equ	5000h		; slot 3: 64 KiB RAM
-VRAMSEG		equ	6000h		; 16 KiB VRAM
-EMPTYSEG	equ	6400h		; 16 KiB of FFh: an empty page
-STACKSEG	equ	6800h
-SNAPSEG		equ	7800h		; the variables as at the first start
+MAIN_SEG	equ	BASE + 0400h	; C-BIOS main ROM, 32 KiB
+LOGO_SEG	equ	BASE + 0c00h	; C-BIOS logo ROM, 16 KiB
+CART_SEG	equ	BASE + 1000h	; cartridge, up to 32 KiB
+Z80SEG		equ	BASE + 2000h	; what the Z80 sees
+RAMSEG		equ	BASE + 3000h	; slot 3: 64 KiB RAM
+VRAMSEG		equ	BASE + 4000h	; 16 KiB VRAM
+EMPTYSEG	equ	BASE + 4400h	; 16 KiB of FFh: an empty page
+STACKSEG	equ	BASE + 4800h	; 8 KiB native stack
+STACK_TOP	equ	2000h
+SNAPSEG		equ	BASE + 4a00h	; the variables as at the first start
+MEMORY_TOP	equ	SNAPSEG + 200h	; paragraphs used, for MSX.COM
 
 BRKEM_VEC	equ	70h		; 40h-7Bh unused (technical manual, vector map)
 CALLN_VEC	equ	71h		; C-BIOS routines done natively (tools/cbios.py)
@@ -75,15 +79,27 @@ MAX_TILES	equ	64		; cells drawn per VRTC at most
 		db	0fh, 0ffh, %1
 %endmacro
 
+		jmp	start
+		align	4
+header		db	'MSX88VA', 0		; checked by MSX.COM
+		dw	MEMORY_TOP
+cart_pages	db	0			; set by MSX.COM: 0, 1 or 2
+
 start:		cli
 		mov	ax,cs
 		mov	ds,ax
 		mov	es,ax
 		mov	ax,STACKSEG
 		mov	ss,ax
-		mov	sp,0fffeh
+		mov	sp,STACK_TOP
 		cld
-		push	es			; the variables as they start, for
+		cmp	byte [cart_pages],1	; the cartridge's pages in slot 1
+		jb	.slots
+		mov	word [slot_seg + 4 * 2 + 1 * 2],CART_SEG
+		cmp	byte [cart_pages],2
+		jb	.slots
+		mov	word [slot_seg + 4 * 2 + 2 * 2],CART_SEG + 400h
+.slots:		push	es			; the variables as they start, for
 		mov	ax,SNAPSEG		; an MSX reset
 		mov	es,ax
 		mov	si,vars
@@ -2563,17 +2579,9 @@ expand:
  %assign p p + 1
 %endrep
 
-; Slot s page p -> segment (0: empty).
-%assign c1 0
-%assign c2 0
-%if CART_PAGES >= 1
- %assign c1 CART_SEG
-%endif
-%if CART_PAGES >= 2
- %assign c2 CART_SEG + 400h
-%endif
+; Slot s page p -> segment (0: empty). Slot 1 is set from cart_pages.
 slot_seg	dw	MAIN_SEG, MAIN_SEG + 400h, LOGO_SEG, 0
-		dw	0, c1, c2, 0
+		dw	0, 0, 0, 0
 		dw	0, 0, 0, 0
 		dw	RAMSEG, RAMSEG + 400h, RAMSEG + 800h, RAMSEG + 0c00h
 

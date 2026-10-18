@@ -23,7 +23,9 @@
 ; M01TEST: can Z80 I/O in the uPD9002's compatible mode be trapped to native
 ; code fast enough for an MSX1 (docs/DESIGN.md)?
 ;
-; Loaded by src/boot/ipl.asm to 2000:0000. Each probe copies a Z80 snippet
+; Started at BASE:0000 (3000h) by M01TEST.COM (src/dos/msxcom.asm) under
+; MS-DOS 4.0; it was first a self-booting disk at 2000:0000 (the M01
+; results). Each probe copies a Z80 snippet
 ; to 5000:0100, enables the I/O trap (block 1 = 98h-99h, block 2 =
 ; A0h-ABh, IN and OUT, byte ports), runs it with BRKEM, and the snippet
 ; returns with RETEM. The trap handler (INT 7Ch/7Dh) decodes the Z80 I/O

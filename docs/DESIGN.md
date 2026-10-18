@@ -55,11 +55,12 @@ VA2):
 
 ## M02: the MSX machine (`src/msx/msx.asm`)
 
-- Memory (paragraphs): code 2000h, C-BIOS main ROM 2400h, logo ROM 2C00h,
-  cartridge 3000h (slot 1 from page 1), the Z80's 64 KiB 4000h, slot-3 RAM
-  5000h, VRAM 6000h, an FFh page 6400h, native stack 6800h. The IPL
-  moves itself below 2000h, then loads past 64 KiB without crossing a
-  64 KiB physical boundary in one read.
+- Memory (paragraphs; M02 had a self-booting disk with BASE 2000h, now
+  MS-DOS with BASE 3000h, see "Disks"): code BASE, C-BIOS main ROM
+  BASE+400h, logo ROM +C00h, cartridge +1000h (slot 1 from page 1), the
+  Z80's 64 KiB +2000h, slot-3 RAM +3000h, VRAM +4000h, an FFh page
+  +4400h, native stack +4800h (8 KiB), the variables' start-up copy
+  +4A00h, up to +4C00h.
 - Slots: an A8h write copies each changed page into the Z80 segment (16
   KiB), after copying a RAM page back to its store. C-BIOS's CHKRAM search
   is patched out (with copied pages every slot looks writable): slot 3 in
@@ -178,3 +179,26 @@ untested.
   VRAM calls copied to spare GVRAM every frame; the copy costs about half
   a frame, so the game runs late while it is on), PROFILE (the Z80 PC at
   every VRTC, a ring at GVRAM C200h).
+
+## Disks (MS-DOS 4.0)
+
+- Every disk is msdos4-va.2 (`msdos4-pc88va-2hd.d88`, MIT licence) with
+  files added (`tools/dosdisk.py`, vaeg's `pcengine_disk.py`); the first
+  disks of M01-M04 were self-booting (an IPL in sector 0, now removed).
+- `src/dos/msxcom.asm` is the loader. MS-DOS 4.0 loads a .COM at 1DDBh;
+  the loader checks that it ends below BASE (3000h) and that DOS leaves
+  memory up to the program's MEMORY_TOP (its header), copies its payload
+  to BASE:0000 and jumps there. The program does not return.
+- MSX.COM (`tools/build_dos.py`) also reads CBIOS_M1.ROM and
+  CBIOS_L1.ROM (C-BIOS 0.29a as released) from the current directory,
+  checks and applies the patch table of `tools/cbios.py` (old bytes,
+  new bytes), reads the cartridge (the argument, else the one *.ROM
+  file other than CBIOS*, a menu for several, none: C-BIOS alone; 8 KiB
+  mirrored, 16 or 32 KiB from page 1) and sets `cart_pages` in the
+  program's header.
+- `build/dist/msx88va.d88` (distributable): MS-DOS, MSX.COM, the C-BIOS
+  files and CBIOS.TXT, MSX.TXT, LICENSE.TXT, AUTOEXEC.BAT running MSX.
+  `build/private/` holds disks with cartridges (never distributed).
+  `add_files.py` adds files to a disk image. `build/dist/m01test.d88` is
+  the M01 probe as M01TEST.COM. vaeg (2026-10-18): both boot; MSX runs
+  a cartridge from the menu.
