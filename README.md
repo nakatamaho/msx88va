@@ -15,6 +15,6 @@ NASM and Python 3; z80asm 1.8 for the test cartridge. The BIOS is C-BIOS
 `$MSX_CBIOS` (the release zip or a directory) and patched at build time;
 it is not part of this repository.
 
-    python3 -I tools/build.py [--cart ROM]  # build/msx.d88, self-booting
+    python3 -I tools/build.py [--cart ROM]  # build/msx.d88, self-booting (HELP: MSX reset)
     python3 -I tools/build_cart.py [--name m02cart]  # build/m03cart.rom, test cartridge
     python3 -I tools/build_m01.py           # build/m01test.d88

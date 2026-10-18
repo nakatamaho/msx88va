@@ -27,9 +27,11 @@
 ;   2  input: the key matrix rows 0-10 (SNSMAT) now and ANDed since the
 ;      start (a key pressed once stays 0), GTSTCK 0 and 1, GTTRIG 0, 1
 ;      and 3, and a frame count, redrawn every frame
-;   3  sprites (16x16, during 2): eight boxes in colours 2-9 in a row
-;      at the top, a white one moving right below them; each box has its
-;      top-left 4x4 corner filled
+;   3  sprites (16x16, during 2): three boxes (colours 2-4) in a row, five
+;      (5-9) in a row below, and a white one moving through the first row;
+;      each box has its top-left 4x4 corner filled. STATFL, the VDP status
+;      the BIOS read last: bit 6 (fifth sprite, number 7) always, bit 5
+;      (collision) while the white box overlaps another
 
 CHPUT:		equ	00a2h
 POSIT:		equ	00c6h
@@ -39,6 +41,7 @@ SNSMAT:		equ	0141h
 GTSTCK:		equ	00d5h
 GTTRIG:		equ	00d8h
 JIFFY:		equ	0fc9eh
+STATFL:		equ	0f3e7h
 SEEN:		equ	0c000h		; 11 rows ANDed
 XPOS:		equ	0c010h
 WRTVDP:		equ	0047h
@@ -178,7 +181,11 @@ sticks:		ld	hl,0c10h		; column 12, line 16
 		call	hex
 		ld	a,(JIFFY)
 		call	hex
-		jr	loop
+		ld	hl,0c12h
+		call	POSIT
+		ld	a,(STATFL)
+		call	hex
+		jp	loop
 
 ; Wait B frames.
 frames:		halt
@@ -217,15 +224,15 @@ box:		db	0ffh, 0f0h, 0f0h, 0f0h, 80h, 80h, 80h, 80h
 		db	01h, 01h, 01h, 01h, 01h, 01h, 01h, 0ffh
 
 ; Y, X, pattern, colour: eight in a row, one moving, the end.
-sat:		db	120, 16, 0, 2
-		db	120, 40, 0, 3
-		db	120, 64, 0, 4
-		db	120, 88, 0, 5
-		db	120, 112, 0, 6
-		db	120, 136, 0, 7
-		db	120, 160, 0, 8
-		db	120, 184, 0, 9
-		db	150, 0, 0, 15
+sat:		db	100, 40, 0, 2
+		db	100, 100, 0, 3
+		db	100, 160, 0, 4
+		db	140, 16, 0, 5
+		db	140, 64, 0, 6
+		db	140, 112, 0, 7
+		db	140, 160, 0, 8
+		db	140, 208, 0, 9
+		db	104, 0, 0, 15
 		db	0d0h, 0, 0, 0
 sat_end:
 
@@ -238,4 +245,5 @@ s_input:	db	"Rows 0-10: now, seen", 13, 10
 		db	13, 10, 13, 10, 13, 10, 13, 10, 13, 10, 13, 10
 		db	13, 10, 13, 10, 13, 10, 13, 10, 13, 10
 		db	"STICK TRIG:", 13, 10
-		db	"JIFFY:", 0
+		db	"JIFFY:", 13, 10
+		db	"STATFL:", 0

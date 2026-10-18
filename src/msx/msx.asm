@@ -35,7 +35,7 @@
 ; changed cells of the picture from the emulated VRAM, and injects the
 ; Z80's mode 1 interrupt while the VDP's interrupt line is active.
 ;
-; HELP (VA keyboard) restarts the machine.
+; HELP (VA keyboard) resets the MSX.
 
 		cpu	186
 		org	0
@@ -53,6 +53,7 @@ RAMSEG		equ	5000h		; slot 3: 64 KiB RAM
 VRAMSEG		equ	6000h		; 16 KiB VRAM
 EMPTYSEG	equ	6400h		; 16 KiB of FFh: an empty page
 STACKSEG	equ	6800h
+SNAPSEG		equ	7800h		; the variables as at the first start
 
 BRKEM_VEC	equ	70h		; 40h-7Bh unused (technical manual, vector map)
 CALLN_VEC	equ	71h		; C-BIOS routines done natively (tools/cbios.py)
@@ -82,6 +83,14 @@ start:		cli
 		mov	ss,ax
 		mov	sp,0fffeh
 		cld
+		push	es			; the variables as they start, for
+		mov	ax,SNAPSEG		; an MSX reset
+		mov	es,ax
+		mov	si,vars
+		xor	di,di
+		mov	cx,(end_of_program - vars) / 2
+		rep	movsw
+		pop	es
 		sti
 		call	screen_init
 		jc	fail
@@ -154,13 +163,15 @@ screen_init:	mov	ax,1702h		; clear the text screen
 		push	cs
 		pop	es
 		sti
-		mov	si,palette
-		mov	dx,0300h
-		mov	cx,16
+		mov	dx,0300h		; palette sets 0 and 1: TSP colours
+.set:		mov	si,palette		; above the text/sprite boundary are
+		mov	cx,16			; shown through set 1 in mixed mode
 .colour:	lodsw
 		out	dx,ax
 		add	dx,2
 		loop	.colour
+		cmp	dx,0340h
+		jb	.set
 		mov	ax,0b01h		; graphics display on
 		int	8fh
 		clc
@@ -264,12 +275,22 @@ vrtc:		push	bp
 		pop	ds
 		inc	word [frames]
 		call	kbd_scan
-		test	byte [va_keys + 0ah],08h	; HELP: restart
-		jnz	.no_help
-		jmp	0ffffh:0000h
-.no_help:	or	byte [vstatus],80h	; the frame flag
+		cmp	word [bp + 4],Z80SEG	; a reset only from the Z80 code
+		jne	.no_help
+		test	byte [va_keys + 0ah],08h	; HELP: MSX reset
+		jz	.reset
+%ifdef TEST_RESET				; vaeg tests: a reset every
+		cmp	word [frames],TEST_RESET	; TEST_RESET frames (frames is
+		je	.reset			; restored to 0)
+%endif
+		jmp	.no_help
+.reset:		call	restart
+		jmp	.eoi
+.no_help:
+		or	byte [vstatus],80h	; the frame flag
 		call	render_step
 		call	sprite_step
+		call	sprite_flags
 		cmp	word [bp + 4],Z80SEG
 		jne	.eoi
 		call	try_inject
@@ -281,6 +302,50 @@ vrtc:		push	bp
 		popa
 		pop	bp
 		iret
+
+; MSX reset (HELP), in the VRTC handler while the Z80 code is
+; interrupted: the variables, memory, picture, SSG and slots as at the
+; start, and the Z80 resumed (by the handler's IRET) at 0000h with every
+; register 0 and interrupts disabled. Entering compatible mode again with
+; BRKEM is not allowed here: this handler was entered from it. The
+; descriptors are rebuilt by sprite_step. BP: the frame, DS = CS.
+restart:	push	bp
+		mov	ax,[gvram_seg]		; kept: set by the graphics BIOS
+		push	ax
+		push	es
+		mov	ax,SNAPSEG
+		mov	ds,ax
+		push	cs
+		pop	es
+		xor	si,si
+		mov	di,vars
+		mov	cx,(end_of_program - vars) / 2
+		rep	movsw
+		push	cs
+		pop	ds
+		pop	es
+		pop	ax
+		mov	[gvram_seg],ax
+		mov	es,ax			; the picture blank
+		xor	di,di
+		xor	ax,ax
+		mov	cx,200 * STRIDE / 2
+		rep	stosw
+		call	memory_init
+		call	sound_init
+		mov	al,0			; every page in slot 0
+		call	ppi_a_w
+		pop	bp
+		xor	ax,ax
+		mov	[bp],ax			; Z80 SP
+		mov	[bp + 2],ax		; Z80 PC
+		and	word [bp + 6],0fdffh	; DI
+		lea	di,[bp - 16]		; the PUSHA image: every register 0
+		push	ss			; (its SP slot is not popped)
+		pop	es
+		mov	cx,8
+		rep	stosw
+		ret
 
 ; With the VDP's interrupt line active (frame flag and R1 bit 5) and the
 ; Z80's interrupts enabled: push the Z80 PC on the Z80 stack, PC = 0038h,
@@ -749,6 +814,7 @@ set_vreg:	mov	ah,[vregs + bx]
 		test	ah,[vreg_sprites + bx]
 		jz	.cells
 		mov	byte [spr_all],1
+		mov	byte [f_dirty],1
 .cells:		and	ah,[vreg_cells + bx]
 		jz	.ret
 		mov	byte [vregchg],1
@@ -799,10 +865,18 @@ mark_addr:	push	ax
 .spt:		mov	ax,bx
 		sub	ax,[r_spt]
 		cmp	ax,800h
-		jae	.ret
+		jae	.sat
 		shr	ax,3
 		mov	bx,ax
 		mov	byte [spt_dirty + bx],1
+		mov	byte [f_dirty],1
+		pop	bx
+		push	bx
+.sat:		mov	ax,bx
+		sub	ax,[r_sat]
+		cmp	ax,80h
+		jae	.ret
+		mov	byte [f_dirty],1
 .ret:		pop	bx
 		pop	dx
 		pop	ax
@@ -882,7 +956,13 @@ mark_span:	pusha
 		shr	dx,3
 		mov	bx,spt_dirty
 		call	.fill
-.end:		pop	es
+		mov	byte [f_dirty],1
+.end:		mov	ax,[r_sat]		; the attribute table
+		mov	dx,80h
+		call	.clip
+		jc	.out
+		mov	byte [f_dirty],1
+.out:		pop	es
 		popa
 		ret
 ; The table at AX, DX bytes long, against SI..DI: AX, DX = first and last
@@ -1861,6 +1941,288 @@ sprite_table:	mov	di,SPR_TABLE
 		jmp	.spr
 .ret:		ret
 
+; ---------------------------------------------------------------------------
+; The VDP's fifth-sprite and collision flags, computed every VRTC from the
+; attribute table and the patterns as the TMS9918 does: sprites up to the
+; first Y of D0h; on a line only the first four count; a collision is two
+; opaque dots of counted sprites on the same picture dot (colour 0 sprites
+; too); the fifth-sprite number is that of the fifth sprite on the first
+; line that has one. The display still shows every sprite. Computed
+; again only after a write to the attribute table, a sprite pattern or a
+; sprite register; the result is applied every frame. DS = CS.
+
+sprite_flags:	test	byte [vregs + 1],40h	; display off: nothing
+		jnz	.on
+		ret
+.on:		cmp	byte [f_dirty],0
+		je	.apply
+		mov	byte [f_dirty],0
+		call	flags_compute
+.apply:		cmp	byte [f_hit],0
+		je	.five
+		or	byte [vstatus],20h
+.five:		test	byte [vstatus],40h	; latched until read
+		jnz	.ret
+		mov	al,[vstatus]
+		and	al,0a0h
+		mov	ah,[f_five]
+		cmp	ah,0ffh
+		je	.none
+		or	al,40h
+		or	al,ah
+		mov	[vstatus],al
+.ret:		ret
+.none:		or	al,[f_last]
+		mov	[vstatus],al
+		ret
+
+; f_hit, f_five (FFh: none) and f_last from the tables.
+flags_compute:	push	es
+		mov	al,[spr_mode]		; height = width: 8, 16 or 32
+		mov	cl,al
+		and	cl,1
+		mov	[f_mag],cl
+		mov	bx,8
+		test	al,2
+		jz	.h
+		shl	bx,1
+.h:		shl	bx,cl
+		mov	[f_h],bx
+		; the sprite list
+		mov	ax,VRAMSEG
+		mov	es,ax
+		mov	si,[r_sat]
+		xor	bx,bx			; BX: sprite number
+.list:		cmp	bx,32
+		jae	.listed
+		mov	al,[es:si]
+		cmp	al,0d0h
+		je	.listed
+		inc	al			; Y + 1, the top 32 negative
+		cbw
+		cmp	al,0e0h
+		jae	.ny
+		xor	ah,ah
+.ny:		shl	bx,1
+		mov	[f_y + bx],ax
+		mov	al,[es:si + 1]
+		xor	ah,ah
+		test	byte [es:si + 3],80h	; early clock
+		jz	.nx
+		sub	ax,32
+.nx:		mov	[f_x + bx],ax
+		shr	bx,1
+		mov	al,[es:si + 2]
+		test	byte [spr_mode],2
+		jz	.np
+		and	al,0fch
+.np:		mov	[f_pat + bx],al
+		add	si,4
+		inc	bx
+		jmp	.list
+.listed:	mov	[f_n],bl
+		mov	al,bl
+		cmp	al,32
+		jb	.last
+		mov	al,31
+.last:		mov	[f_last],al
+		push	ds			; counts 0, fifth numbers FFh
+		pop	es
+		mov	di,f_cnt
+		xor	ax,ax
+		mov	cx,96
+		rep	stosw
+		mov	di,f_fifth
+		dec	ax
+		mov	cx,96
+		rep	stosw
+		mov	byte [f_hit],0
+		; sprite J against the earlier ones, then its lines counted
+		mov	byte [f_j],0
+.jl:		mov	al,[f_j]
+		cmp	al,[f_n]
+		jae	.result
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[f_y + bx]		; rows max(y, 0) .. min(y + h, 192)
+		mov	dx,ax
+		add	dx,[f_h]
+		or	ax,ax
+		jns	.r0
+		xor	ax,ax
+.r0:		cmp	dx,192
+		jle	.r1
+		mov	dx,192
+.r1:		cmp	ax,dx
+		jge	.jnext
+		mov	[f_r0],ax
+		mov	[f_r1],dx
+		cmp	byte [f_hit],0
+		jne	.count
+		call	collide_j
+.count:		mov	si,[f_r0]
+.cl:		mov	al,[f_cnt + si]
+		cmp	al,4
+		jne	.inc
+		cmp	byte [f_fifth + si],0ffh
+		jne	.inc
+		mov	ah,[f_j]
+		mov	[f_fifth + si],ah
+.inc:		cmp	al,0ffh
+		je	.cn
+		inc	byte [f_cnt + si]
+.cn:		inc	si
+		cmp	si,[f_r1]
+		jb	.cl
+.jnext:		inc	byte [f_j]
+		jmp	.jl
+.result:	mov	si,f_fifth		; the first line with a fifth
+		mov	cx,192
+.fl:		lodsb
+		cmp	al,0ffh
+		jne	.found
+		loop	.fl
+.found:		mov	[f_five],al
+		pop	es
+		ret
+
+; Sprite f_j against sprites 0 .. f_j - 1 on rows f_r0 .. f_r1 - 1; sets
+; f_hit. DS = CS.
+collide_j:	mov	byte [f_i],0
+.il:		mov	al,[f_i]
+		cmp	al,[f_j]
+		jb	.go
+		ret
+.go:		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	al,[f_j]
+		xor	ah,ah
+		mov	di,ax
+		shl	di,1
+		mov	ax,[f_x + bx]		; |xi - xj| < h
+		sub	ax,[f_x + di]
+		jns	.ax
+		neg	ax
+.ax:		cmp	ax,[f_h]
+		jae	.inext
+		mov	ax,[f_y + bx]		; rows of both
+		mov	dx,ax
+		add	dx,[f_h]
+		cmp	ax,[f_r0]
+		jge	.ry0
+		mov	ax,[f_r0]
+.ry0:		cmp	dx,[f_r1]
+		jle	.ry1
+		mov	dx,[f_r1]
+.ry1:		cmp	ax,dx
+		jge	.inext
+		mov	si,ax
+		mov	[f_rend],dx
+.row:		cmp	byte [f_cnt + si],4	; J not shown on this line
+		jae	.rnext
+		call	collide_row
+		cmp	byte [f_hit],0
+		jne	.ret
+.rnext:		inc	si
+		cmp	si,[f_rend]
+		jb	.row
+.inext:		inc	byte [f_i]
+		jmp	.il
+.ret:		ret
+
+; Sprites f_i and f_j on picture row SI. Keeps SI.
+collide_row:	push	si
+		mov	al,[f_i]
+		call	row_bits
+		mov	[f_wi],ax
+		mov	[f_xi],dx
+		or	ax,ax
+		jz	.ret
+		mov	al,[f_j]
+		call	row_bits
+		mov	[f_wj],ax
+		mov	[f_xj],dx
+		or	ax,ax
+		jz	.ret
+		mov	ax,[f_xi]		; columns max(xi, xj, 0) ..
+		cmp	ax,dx			; min(xi, xj) + h, at most 256
+		jge	.c0
+		mov	ax,dx
+.c0:		or	ax,ax
+		jns	.c0b
+		xor	ax,ax
+.c0b:		mov	dx,[f_xi]
+		cmp	dx,[f_xj]
+		jle	.c1
+		mov	dx,[f_xj]
+.c1:		add	dx,[f_h]
+		cmp	dx,256
+		jle	.c1b
+		mov	dx,256
+.c1b:		mov	cl,[f_mag]
+.col:		cmp	ax,dx
+		jge	.ret
+		mov	bx,ax			; dot of I
+		sub	bx,[f_xi]
+		shr	bx,cl
+		mov	si,[f_wi]
+		xchg	cx,bx
+		shl	si,cl
+		xchg	cx,bx
+		test	si,8000h
+		jz	.cnext
+		mov	bx,ax			; dot of J
+		sub	bx,[f_xj]
+		shr	bx,cl
+		mov	si,[f_wj]
+		xchg	cx,bx
+		shl	si,cl
+		xchg	cx,bx
+		test	si,8000h
+		jz	.cnext
+		mov	byte [f_hit],1
+		jmp	.ret
+.cnext:		inc	ax
+		jmp	.col
+.ret:		pop	si
+		ret
+
+; Sprite AL on picture row SI: AX = its pattern row (left byte high; the
+; right byte for 16x16), DX = its X. Keeps SI.
+row_bits:	xor	ah,ah
+		mov	bx,ax
+		mov	dl,[f_pat + bx]
+		shl	bx,1
+		push	dx
+		mov	ax,si
+		sub	ax,[f_y + bx]
+		mov	cl,[f_mag]
+		shr	ax,cl			; source row
+		pop	dx
+		xor	dh,dh
+		shl	dx,3
+		add	dx,ax
+		add	dx,[r_spt]
+		push	es
+		push	bx
+		mov	bx,VRAMSEG
+		mov	es,bx
+		mov	bx,dx
+		and	bh,3fh
+		mov	ah,[es:bx]
+		xor	al,al
+		test	byte [spr_mode],2
+		jz	.r
+		add	bx,16
+		and	bh,3fh
+		mov	al,[es:bx]
+.r:		pop	bx
+		pop	es
+		mov	dx,[f_x + bx]
+		ret
+
 ; pairs[c] = (fgw xor bgw, bgw) for every colour byte c (fg high nibble).
 make_pairs:	push	es
 		push	cs
@@ -1923,6 +2285,12 @@ puts:		lodsb
 ; Data
 
 s_fail		db	'Graphics BIOS call failed.', 13, 10, 0
+
+
+; Everything from here on is saved at the first start and restored at an
+; MSX reset.
+		align	2
+vars:
 
 ; Block 1 = 98h-99h, block 2 = A0h-ABh (start, end; low byte first).
 trap_ranges	db	98h, 0, 99h, 0, 0a0h, 0, 0abh, 0
@@ -2160,6 +2528,27 @@ col_pend	times	768 db 0
 row_pend	times	24 db 0
 shadow		times	960 db 0
 spt_dirty	times	256 db 0
+f_y		times	32 dw 0
+f_x		times	32 dw 0
+f_h		dw	0
+f_r0		dw	0
+f_r1		dw	0
+f_rend		dw	0
+f_wi		dw	0
+f_wj		dw	0
+f_xi		dw	0
+f_xj		dw	0
+f_pat		times	32 db 0
+f_cnt		times	192 db 0
+f_fifth		times	192 db 0
+f_n		db	0
+f_last		db	0
+f_hit		db	0
+f_five		db	0ffh
+f_dirty		db	1
+f_mag		db	0
+f_i		db	0
+f_j		db	0
 ; A byte's dots doubled, MSB first, as two bytes in display order.
 dbl:
 %assign b 0
@@ -2176,5 +2565,6 @@ dbl:
  %assign b b + 1
 %endrep
 
+		align	2
 end_of_program:
 		times	CODE_BYTES - ($ - $$) db 0	; fails if the program is too large

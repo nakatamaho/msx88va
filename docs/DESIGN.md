@@ -119,8 +119,16 @@ untested.
   keyboard scan continue in C-BIOS after the replaced I/O part.
 - Keyboard: every VRTC reads the VA matrix (ports 00h-0Eh) and maps it to
   MSX rows 0-10 (`key_map`, after vaeg's `io/serial.c`); the cursor keys,
-  SPACE or Z and X are also joystick port 1 (PSG register 14). HELP
-  restarts the machine (ESC is an MSX key).
+  SPACE or Z and X are also joystick port 1 (PSG register 14). ESC is an
+  MSX key.
+- HELP resets the MSX, in the VRTC handler while the Z80 code is
+  interrupted: the variables as saved at the start (SNAPSEG), memory,
+  picture, SSG and slots reset, and the interrupt frame edited so that the
+  IRET resumes the Z80 at 0000h with every register 0 and DI. BRKEM
+  cannot be used there (the handler was entered from compatible mode),
+  and jumping back to the boot ROM failed on the PC-88VA (2026-10-18:
+  the I/O trap left on, the TSP sprites left on; the ROM's BIOS work
+  area also overlaps the payload by then).
 - Rendering redraws only changed cells: VRAM writes flag the pattern,
   colour or name row they hit; a pass compares each cell's name with the
   one last drawn there; at most 64 cells a frame. A register change that
@@ -131,6 +139,20 @@ untested.
   across); the descriptors are rebuilt from the attribute table every
   VRTC. Sizes 8 and 16, magnified or not, the early clock bit. Not done:
   fifth-sprite and collision flags, clipping to the picture, the
-  four-a-line limit.
+  four-a-line limit on the display (all sprites are shown).
+- TSP colours above the text/sprite boundary are shown through palette
+  set 1 in mixed mode, so both sets (0300h and 0320h) get the TMS9918
+  colours. With set 0 only, MSX colours 8 and 9 came out grey and dark
+  blue on the PC-88VA2 (2026-10-18).
+- Fifth-sprite and collision flags (status bits 6, 5, 0-4) are computed
+  in native code as the TMS9918 defines them: four sprites a line count,
+  colour-0 sprites included, opaque dots on the picture only. Recomputed
+  only after a write to the attribute table, a sprite pattern or a
+  sprite register. The TSP's own collision flag is not used: it has
+  different rules (colour groups, no colour-0 sprites, no four-a-line
+  limit, a 160 us read window) and vaeg does not model it.
 - Test cartridge `src/cart/m03cart.asm`: PSG scale by OUT and by WRTPSG,
-  the key matrix and GTSTCK/GTTRIG, nine 16x16 sprites, one moving.
+  the key matrix and GTSTCK/GTTRIG, nine 16x16 sprites (one moving over
+  a row) and STATFL: C7h, E7h while the moving one overlaps another.
+- PC-88VA and PC-88VA2 (2026-10-18, disk 6d0214cb...): PSG, keys and
+  sprites work.
