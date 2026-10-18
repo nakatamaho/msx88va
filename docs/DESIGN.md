@@ -155,4 +155,5 @@ untested.
   the key matrix and GTSTCK/GTTRIG, nine 16x16 sprites (one moving over
   a row) and STATFL: C7h, E7h while the moving one overlaps another.
 - PC-88VA and PC-88VA2 (2026-10-18, disk 6d0214cb...): PSG, keys and
-  sprites work.
+  sprites work. Disk bad9ce14... on both: the colours 8 and 9 right with
+  both palette sets, STATFL C7h/E7h as in vaeg, HELP resets the MSX.
