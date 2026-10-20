@@ -74,6 +74,7 @@ GFX_X		equ	16		; byte offset: 32 dots for 256 dots
 TEXT_X		equ	20		; 40 dots for the 240 dots of text mode
 STRIDE		equ	160		; bytes per 320-dot line
 MAX_TILES	equ	64		; cells drawn per VRTC at most
+SCAN_MAX	equ	384		; cells checked per VRTC at most
 
 %macro BRKEM 1
 		db	0fh, 0ffh, %1
@@ -1486,8 +1487,7 @@ pass_start:	mov	byte [vwrite],0
 		cmp	byte [vregchg],0
 		je	.pend
 		mov	byte [vregchg],0
-		call	render_setup
-		mov	byte [rfull],1
+		call	render_flip
 .pend:		push	es			; pending <- written, written <- 0
 		push	cs
 		pop	es
@@ -1510,11 +1510,165 @@ pass_start:	mov	byte [vwrite],0
 		mov	ax,[r_start]
 		mov	[rdest],ax
 		mov	byte [pass_on],1
+		call	make_merged
 		cmp	byte [rfull],0
 		je	.ret
 		cmp	byte [r_clear],0
 		je	.ret
 		call	clear_picture
+.ret:		ret
+
+; merged[i]: 1 when a cell of name i (graphics II: third * 256 + name)
+; must be drawn whatever was drawn there: its pattern or colour pending,
+; or a full redraw. DS = CS.
+make_merged:	push	bp
+		push	es
+		push	cs
+		pop	es
+		mov	di,merged
+		mov	cx,768 / 2
+		mov	ax,0101h		; a full redraw: every cell
+		cmp	byte [rfull],0
+		jne	.fill
+		xor	ax,ax			; nothing pending: names only
+		cmp	byte [any_pend],0
+		je	.fill
+		mov	ax,[render_fn]
+		cmp	ax,loop_g2
+		je	.g2
+		mov	si,pat_pend		; graphics I, text: by name
+		mov	cx,256 / 2
+		rep	movsw
+		cmp	word [render_fn],loop_g1
+		jne	.ret
+		xor	bx,bx			; graphics I: a colour, its eight
+.g1:		cmp	byte [col_pend + bx],0	; names
+		je	.g1_next
+		mov	di,bx
+		shl	di,3
+		mov	ax,0101h
+		mov	[merged + di],ax
+		mov	[merged + di + 2],ax
+		mov	[merged + di + 4],ax
+		mov	[merged + di + 6],ax
+.g1_next:	inc	bx
+		cmp	bx,32
+		jb	.g1
+		jmp	.ret
+.g2:		xor	si,si			; graphics II: through the masks
+		mov	dx,[r_pmi]
+		mov	bp,[r_cmi]
+.g2_l:		mov	bx,si
+		and	bx,dx
+		mov	al,[pat_pend + bx]
+		mov	bx,si
+		and	bx,bp
+		or	al,[col_pend + bx]
+		mov	[merged + si],al
+		inc	si
+		cmp	si,768
+		jb	.g2_l
+		jmp	.ret
+.fill:		rep	stosw
+.ret:		pop	es
+		pop	bp
+		ret
+
+; The registers changed: the new set-up, and a full redraw unless only the
+; name, pattern or colour table moved in the same mode (a game's double
+; buffering, page flipping every few frames): then only the patterns and
+; colours whose bytes differ between the old and the new table are
+; flagged, and the names are compared with the shadow as usual.
+render_flip:	push	es
+		push	cs
+		pop	es
+		mov	si,render_fn		; the set-up so far
+		mov	di,old_setup
+		mov	cx,SETUP_WORDS
+		rep	movsw
+		pop	es
+		mov	al,[backdrop]
+		mov	[old_backdrop],al
+		call	render_setup
+		mov	al,[backdrop]
+		cmp	al,[old_backdrop]
+		jne	.full
+		mov	ax,[render_fn]
+		cmp	ax,[old_setup]
+		jne	.full
+		cmp	ax,loop_blank
+		je	.full
+		mov	si,old_setup + r_pmask - render_fn
+		mov	di,r_pmask		; the masks
+		mov	cx,4
+		call	.same
+		jne	.full
+		mov	si,old_setup + r_ncells - render_fn
+		mov	di,r_ncells		; the geometry, the text colours
+		mov	cx,5
+		call	.same
+		jne	.full
+		mov	si,[old_setup + r_pat - render_fn]
+		mov	di,[r_pat]		; the patterns
+		mov	cx,[r_patsize]
+		shr	cx,3
+		mov	bx,pat_dirty
+		call	diff8
+		mov	si,[old_setup + r_col - render_fn]
+		mov	di,[r_col]		; the colours: by 8 bytes (graphics
+		mov	cx,[r_colsize]		; II) or bytes (graphics I)
+		mov	bx,col_dirty
+		cmp	byte [r_colshift],0
+		je	.bytes
+		shr	cx,3
+		call	diff8
+		jmp	.flagged
+.bytes:		call	diff1
+.flagged:	mov	byte [any_dirty],1	; every row checked
+		ret
+.full:		mov	byte [rfull],1
+		ret
+.same:		push	es
+		push	cs
+		pop	es
+		repe	cmpsw
+		pop	es
+		ret
+
+; Flags at CS:BX the CX entries of 8 (diff8) or 1 (diff1) bytes that
+; differ between the VRAM tables at SI (old) and DI (new). Uses AX, BX,
+; CX, SI, DI.
+diff8:		mov	ax,4			; words an entry
+		jmp	diff
+diff1:		mov	ax,0
+diff:		jcxz	.ret
+		push	ds
+		push	es
+		push	dx
+		mov	dx,VRAMSEG
+		mov	ds,dx
+		mov	es,dx
+		mov	dx,ax
+.e:		push	cx
+		or	dx,dx
+		jz	.b
+		mov	cx,dx
+		repe	cmpsw
+		je	.next
+		mov	byte [cs:bx],1
+		shl	cx,1			; past the rest of the entry
+		add	si,cx
+		add	di,cx
+		jmp	.next
+.b:		cmpsb
+		je	.next
+		mov	byte [cs:bx],1
+.next:		pop	cx
+		inc	bx
+		loop	.e
+		pop	dx
+		pop	es
+		pop	ds
 .ret:		ret
 
 ; The 256x192 picture in the backdrop colour.
@@ -1538,7 +1692,11 @@ clear_picture:	mov	es,[gvram_seg]
 render_setup:	mov	al,[vregs + 7]		; backdrop
 		and	al,0fh
 		mov	[backdrop],al
+		cmp	al,[pairs_bd]		; the pairs depend on it alone
+		je	.pairs
+		mov	[pairs_bd],al
 		call	make_pairs
+.pairs:
 		mov	al,[vregs + 2]		; name table
 		and	ax,0fh
 		shl	ax,10
@@ -1626,52 +1784,115 @@ loop_blank:	mov	byte [pass_on],0
 		mov	byte [rfull],0
 		ret
 
-; The cell loop of a mode. %1: cells a row, %2: bytes a cell, %3: the
-; check of cell SI's name AL (jumps to .draw or .next; AH free), %4: the
-; tile routine (AX as left by %3). DS = CS on entry.
+; The cell loop of a mode. %1: cells a row, %2: bytes a cell, %3: 1 in
+; graphics II (AX for the tile routine: third * 256 + name; merged by
+; third), %4: the tile routine. A cell is drawn when its name is not the
+; one drawn there (shadow) or merged flags it. Rows without a written
+; name are skipped when nothing else is pending. A call draws at most
+; MAX_TILES cells and checks at most about SCAN_MAX; the pass goes on in
+; the next frame (rpos: the cell, rrow, rcol, rdest: the row's start).
+; DS = CS on entry.
 %macro CELL_LOOP 4
 		mov	es,[gvram_seg]
 		push	bp
 		push	ds
 		mov	si,[rpos]
 		mov	di,[rdest]
+		mov	dl,[rcol]		; DL: the column, DH: the row
+		mov	dh,[rrow]
+		mov	word [scan],SCAN_MAX
 		mov	ax,VRAMSEG
 		mov	ds,ax
-%%cell:		cmp	si,[cs:r_ncells]
+%%row:		cmp	si,[cs:r_ncells]
 		jae	%%end
-		cmp	byte [cs:rcol],0	; a row start: skip the row?
-		jne	%%test
+		or	dl,dl			; a row start: skip the row?
+		jnz	%%scan
+		cmp	word [cs:scan],0	; or stop here for this frame
+		jle	%%save
 		cmp	byte [cs:rfull],0
-		jne	%%test
+		jne	%%scan
 		cmp	byte [cs:any_pend],0
-		jne	%%test
-		mov	bl,[cs:rrow]
+		jne	%%scan
+		mov	bl,dh
 		xor	bh,bh
 		cmp	byte [cs:row_pend + bx],0
-		jne	%%test
+		jne	%%scan
 		add	si,%1
 		add	di,8 * STRIDE
-		inc	byte [cs:rrow]
-		jmp	%%cell
-%%test:		mov	bx,[cs:r_name]
-		mov	al,[bx + si]
+		inc	dh
+		jmp	%%row
+%%scan:		mov	cl,%1			; CX: the cells left in the row
+		sub	cl,dl
+		xor	ch,ch
+		sub	[cs:scan],cx
+		mov	bx,[cs:r_name]		; SI: the name's address, BP: the
+		add	si,bx			; shadow at [cs:bp + si]
+		mov	bp,shadow
+		sub	bp,bx
+		mov	bx,merged
+ %if %3
+		mov	al,dh			; graphics II: the third's flags
+		shr	al,3
+		add	bh,al
+ %endif
+%%c:		lodsb
+		cmp	al,[cs:bp + si - 1]
+		jne	%%hit
+		cs	xlatb
+		or	al,al
+		jnz	%%hit_again
+		loop	%%c
+		sub	si,[cs:r_name]		; the row done
+		mov	dl,0
+		inc	dh
+		add	di,8 * STRIDE
+		jmp	%%row
+%%hit_again:	mov	al,[si - 1]
+%%hit:		mov	[cs:bp + si - 1],al	; the shadow
+		push	cx
+		push	dx
+		push	bx
+		push	bp
+		push	si
+		push	di
 		xor	ah,ah
-		%3
-.draw:		mov	[cs:shadow + si],al
+ %if %3
+		mov	ah,dh
+		shr	ah,3
+ %endif
+		mov	bl,%1			; the cell's place: the row's start
+		sub	bl,cl			; + column * %2
+		mov	bh,0
+		imul	bx,bx,%2
+		add	di,bx
 		call	%4
+		pop	di
+		pop	si
+		pop	bp
+		pop	bx
+		pop	dx
+		pop	cx
 		dec	word [cs:budget]
-.next:		inc	si
-		add	di,%2
-		inc	byte [cs:rcol]
-		cmp	byte [cs:rcol],%1
-		jb	%%budget
-		mov	byte [cs:rcol],0
-		inc	byte [cs:rrow]
-		add	di,8 * STRIDE - %1 * %2
-%%budget:	cmp	word [cs:budget],0
-		jne	%%cell
-		mov	[cs:rpos],si
+		jz	%%full
+		loop	%%c
+		sub	si,[cs:r_name]		; the row done
+		mov	dl,0
+		inc	dh
+		add	di,8 * STRIDE
+		jmp	%%row
+%%full:		dec	cx			; drawn enough: stop after this cell
+		mov	dl,%1
+		sub	dl,cl
+		sub	si,[cs:r_name]
+		cmp	dl,%1
+		jb	%%save
+		mov	dl,0
+		inc	dh
+		add	di,8 * STRIDE
+%%save:		mov	[cs:rpos],si
 		mov	[cs:rdest],di
+		mov	[cs:rcol],dl
+		mov	[cs:rrow],dh
 		pop	ds
 		pop	bp
 		ret
@@ -1682,49 +1903,9 @@ loop_blank:	mov	byte [pass_on],0
 		ret
 %endmacro
 
-%macro CHECK_G1 0
-		cmp	byte [cs:rfull],0
-		jne	.draw
-		cmp	al,[cs:shadow + si]
-		jne	.draw
-		mov	bx,ax
-		cmp	byte [cs:pat_pend + bx],0
-		jne	.draw
-		shr	bx,3
-		cmp	byte [cs:col_pend + bx],0
-		je	.next
-%endmacro
-
-%macro CHECK_G2 0
-		mov	ah,[cs:rrow]		; AX: third * 256 + name
-		shr	ah,3
-		cmp	byte [cs:rfull],0
-		jne	.draw
-		cmp	al,[cs:shadow + si]
-		jne	.draw
-		mov	bx,ax
-		and	bx,[cs:r_pmi]
-		cmp	byte [cs:pat_pend + bx],0
-		jne	.draw
-		mov	bx,ax
-		and	bx,[cs:r_cmi]
-		cmp	byte [cs:col_pend + bx],0
-		je	.next
-%endmacro
-
-%macro CHECK_TEXT 0
-		cmp	byte [cs:rfull],0
-		jne	.draw
-		cmp	al,[cs:shadow + si]
-		jne	.draw
-		mov	bx,ax
-		cmp	byte [cs:pat_pend + bx],0
-		je	.next
-%endmacro
-
-loop_g1:	CELL_LOOP	32, 4, CHECK_G1, tile_g1
-loop_g2:	CELL_LOOP	32, 4, CHECK_G2, tile_g2
-loop_text:	CELL_LOOP	40, 3, CHECK_TEXT, tile_text
+loop_g1:	CELL_LOOP	32, 4, 0, tile_g1
+loop_g2:	CELL_LOOP	32, 4, 1, tile_g2
+loop_text:	CELL_LOOP	40, 3, 0, tile_text
 
 ; One pattern line: BP = pattern byte * 4, DX/CX the colour pair.
 %macro LINE 0
@@ -1867,7 +2048,24 @@ sprite_step:	mov	dx,0153h		; TVRAM at A0000h
 		cmp	byte [spr_all],0
 		je	.pats
 		mov	byte [spr_all],0
+		push	word [r_spt]
+		mov	al,[spr_mode]
+		push	ax
 		call	sprite_setup
+		pop	ax
+		pop	si			; SI: the old pattern table
+		cmp	al,[spr_mode]
+		jne	.all
+		cmp	byte [spr_conv],0
+		je	.all
+		mov	di,[r_spt]		; the table moved (double
+		cmp	si,di			; buffering): the patterns that
+		je	.pats			; differ
+		mov	bx,spt_dirty
+		mov	cx,256
+		call	diff8
+		jmp	.pats
+.all:		mov	byte [spr_conv],1	; every pattern
 		push	es
 		push	cs
 		pop	es
@@ -2747,6 +2945,8 @@ r_ncells	dw	0
 r_cols		dw	32
 r_start		dw	0
 r_text		dw	0, 0
+SETUP_WORDS	equ	($ - render_fn) / 2	; render_flip compares these
+old_setup	times	SETUP_WORDS dw 0
 rpos		dw	0
 r_spt		dw	0
 r_sat		dw	0
@@ -2777,6 +2977,9 @@ spr_ys		db	1
 spr_is		db	5
 any_pend	db	0
 backdrop	db	0
+old_backdrop	db	0
+pairs_bd	db	0ffh			; the backdrop of pairs
+spr_conv	db	0			; 1: patterns converted in spr_mode
 g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0
 opn_io		db	0
@@ -2796,6 +2999,8 @@ pat_pend	times	768 db 0
 col_pend	times	768 db 0
 row_pend	times	24 db 0
 shadow		times	960 db 0
+merged		times	768 db 0
+scan		dw	0
 spt_dirty	times	256 db 0
 f_y		times	32 dw 0
 f_x		times	32 dw 0
