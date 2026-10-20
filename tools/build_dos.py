@@ -33,8 +33,9 @@ from files at run time. Outputs, in build/ (ignored by git):
     build/dist/msx88va.d88      MS-DOS 4.0, MSX.COM, C-BIOS 0.29a (as
                                 released, with its licence), MSX.TXT,
                                 LICENSE.TXT, AUTOEXEC.BAT running MSX
-    build/dist/MSX.COM ...      the same files, add_files.py and
-                                pcengine_disk.py (from vaeg)
+    build/dist/MSX.COM ...      the same files, add_files.py,
+                                get_games.py and pcengine_disk.py (from
+                                vaeg)
     build/private/msx88va-carts.d88
                                 with --cart: the disk with those cartridge
                                 files added (private, never distributed)
@@ -122,6 +123,7 @@ def main() -> int:
         if name != "AUTOEXEC.BAT":
             (dist / name).write_bytes(data)
     shutil.copyfile(REPO / "tools/add_files.py", dist / "add_files.py")
+    shutil.copyfile(REPO / "tools/get_games.py", dist / "get_games.py")
     shutil.copyfile(dosdisk.disk_tool_path(), dist / "pcengine_disk.py")
     digest = hashlib.sha256((dist / "msx88va.d88").read_bytes()).hexdigest()
     print(f"{dist / 'msx88va.d88'}: MSX.COM ({len(com)} bytes), C-BIOS, "

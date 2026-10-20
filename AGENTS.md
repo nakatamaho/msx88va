@@ -34,7 +34,9 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
   in memory. Cartridge ROMs and anything derived from them are never
   committed and never on a distributed disk: `build/private/` only.
   `.gitignore` covers `build/`, `*.rom`, `*.d88`; check `git status`
-  before every commit.
+  before every commit. The test games are freeware of the MSXdev contest,
+  fetched by the user with `tools/get_games.py` (official ZIPs, SHA-256);
+  they are not ours to redistribute.
 - **C-BIOS compatibility.** A routine done natively must leave the Z80
   registers and flags as the C-BIOS routine does (games compute their
   next call from them; see DESIGN "M04").
@@ -52,6 +54,7 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
     export MSX_CBIOS=/path/to/cbios-0.29a.zip
     python3 -I tools/build_dos.py                  # build/dist/msx88va.d88
     python3 -I tools/build_dos.py --cart GAME.rom  # + build/private/msx88va-carts.d88
+    python3 -I build/dist/get_games.py build/dist/msx88va.d88  # MSXdev games
     python3 -I tools/build_m01.py                  # build/dist/m01test.d88
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 

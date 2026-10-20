@@ -16,6 +16,14 @@ disk image). Without an argument MSX runs the one *.ROM file of the
 current directory other than C-BIOS, shows a menu when there are several,
 and starts C-BIOS alone when there is none. No cartridge ROM is included.
 
+Free games: on a PC with Python 3,
+
+  python3 get_games.py msx88va.d88
+
+downloads eight freeware MSX1 games of the MSXdev contest from
+msxdev.org and writes msx88va-games.d88 with them and GAMES.TXT (their
+authors and pages). The games belong to their authors.
+
 Keys: the VA keyboard is the MSX keyboard. Joystick 1: cursor keys,
 SPACE or Z (trigger A), X (trigger B). HELP resets the MSX. To leave,
 switch the machine off or reset it.

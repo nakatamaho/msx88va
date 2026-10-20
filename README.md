@@ -15,6 +15,13 @@ licence, release msdos4-va.2) with `MSX.COM`, which reads C-BIOS 0.29a
 (http://cbios.sourceforge.net/, two-clause BSD licence, on the disk) and
 your cartridge ROM files at run time. No cartridge ROM is distributed.
 
+Free games: `get_games.py` (in `build/dist`, and on the release) downloads
+eight freeware MSX1 games of the MSXdev contest from msxdev.org (checked by
+SHA-256) and adds them to a copy of the disk:
+
+    python3 -I build/dist/get_games.py build/dist/msx88va.d88
+    # -> build/dist/msx88va-games.d88, ZIPs kept in build/dist/msxdev-zips
+
 ## Building
 
 NASM, Python 3, vaeg's `tools/pc88va/pcengine_disk.py` (`../vaeg`), the
