@@ -26,8 +26,9 @@
 ;
 ;   MSX [cartridge]
 ;
-; reads C-BIOS 0.29a (CBIOS_M1.ROM, CBIOS_L1.ROM) from the current
-; directory, checks and patches it as tools/cbios.py lists (msxdata.inc),
+; reads MSXBIOS.ROM (an MSX1 main ROM of the user's, run unpatched) or
+; else C-BIOS 0.29a (CBIOS_M1.ROM, CBIOS_L1.ROM) from the current
+; directory, checks and patches C-BIOS as tools/cbios.py lists,
 ; reads the cartridge (8, 16 or 32 KiB, from page 1) named on the command
 ; line, or else the one *.ROM file of the current directory other than
 ; C-BIOS (a menu when there are several, none: no cartridge), then copies
@@ -103,9 +104,35 @@ print:		mov	ah,09h
 
 %ifdef MSX
 ; ---------------------------------------------------------------------------
-; C-BIOS: both files, their sizes, the bytes the patches replace.
+; MSXBIOS.ROM, an MSX1 main ROM of the user's (32 KiB, DI; JP at 0000h),
+; when the current directory has one: run as it is, slot 0 page 2 empty.
+; Otherwise C-BIOS: both files, their sizes, the bytes the patches
+; replace.
 
-load_cbios:	mov	dx,f_main
+load_cbios:	mov	dx,f_msxbios
+		mov	bx,MAIN_SEG
+		mov	cx,8000h
+		call	read_file
+		jc	.cbios			; none: C-BIOS
+		cmp	ax,8000h
+		jne	.bad_msx
+		mov	ax,MAIN_SEG
+		mov	es,ax
+		cmp	word [es:0],0c3f3h
+		jne	.bad_msx
+		mov	ax,LOGO_SEG		; slot 0 page 2: empty (FFh)
+		mov	es,ax
+		xor	di,di
+		mov	ax,0ffffh
+		mov	cx,2000h
+		rep	stosw
+		mov	byte [payload + HEADER + 11],0	; ram_slot: RAM in slot 0
+		mov	dx,s_msxbios
+		call	print
+		jmp	.done
+.bad_msx:	mov	dx,s_bad_msxbios
+		jmp	fail
+.cbios:		mov	dx,f_main
 		mov	bx,MAIN_SEG
 		mov	cx,8000h
 		call	read_file
@@ -188,9 +215,15 @@ choose_cart:	mov	si,81h			; the command line
 		mov	ah,4eh
 .find:		int	21h
 		jc	.found
-		cmp	word [dta + 1eh],'CB'	; CBIOS*: not a cartridge
-		jne	.take
+		cmp	word [dta + 1eh],'CB'	; CBIOS*, MSXBIOS*: not
+		jne	.msxbios		; cartridges
 		cmp	word [dta + 20h],'IO'
+		je	.next
+.msxbios:	cmp	word [dta + 1eh],'MS'
+		jne	.take
+		cmp	word [dta + 20h],'XB'
+		jne	.take
+		cmp	word [dta + 22h],'IO'
 		je	.next
 .take:		cmp	byte [carts],MAX_CARTS
 		jae	.next
@@ -368,11 +401,14 @@ s_no_cbios	db	'CBIOS_M1.ROM and CBIOS_L1.ROM (C-BIOS 0.29a) are needed in the'
 		db	' current directory.', 13, 10, '$'
 s_bad_cbios	db	'CBIOS_M1.ROM or CBIOS_L1.ROM is not C-BIOS 0.29a for the MSX1.'
 		db	13, 10, '$'
+s_msxbios	db	'MSX BIOS: MSXBIOS.ROM', 13, 10, '$'
+s_bad_msxbios	db	'MSXBIOS.ROM is not an MSX1 main ROM (32 KiB).', 13, 10, '$'
 s_menu		db	'Cartridges:', 13, 10, '0 none', 13, 10, '$'
 s_choose	db	'Number? $'
 s_cart		db	13, 10, 'Cartridge: $'
 s_no_cart	db	'The cartridge file cannot be read.', 13, 10, '$'
 s_cart_size	db	'The cartridge must be 8, 16 or 32 KiB (no mapper).', 13, 10, '$'
+f_msxbios	db	'MSXBIOS.ROM', 0
 f_main		db	'CBIOS_M1.ROM', 0
 f_logo		db	'CBIOS_L1.ROM', 0
 f_pattern	db	'*.ROM', 0

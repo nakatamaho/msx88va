@@ -10,7 +10,10 @@ MSX.COM needs, in the current directory:
   CBIOS_M1.ROM, CBIOS_L1.ROM  C-BIOS 0.29a, an open-source MSX BIOS
                               (two-clause BSD licence, see CBIOS.TXT)
 
-and plays a cartridge ROM file: 8, 16 or 32 KiB, without a mapper. Copy
+An MSX1 main ROM of your own (32 KiB) named MSXBIOS.ROM is used instead
+of C-BIOS when it is in the current directory; none is included.
+
+MSX.COM plays a cartridge ROM file: 8, 16 or 32 KiB, without a mapper. Copy
 your own ROM files to this disk (under MS-DOS, or with add_files.py on a
 disk image). Without an argument MSX runs the one *.ROM file of the
 current directory other than C-BIOS, shows a menu when there are several,

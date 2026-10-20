@@ -206,6 +206,11 @@ The address set-up pair (two OUTs to 99h) is the same mechanism.
   (`DI; IN A,(99h); AND 80h; JR Z`) hung at the C-BIOS screen; the
   status read now opens the interrupts for one instruction
   (`vdp_stat_r`, 2026-10-20).
+- A real MSX BIOS (MSXBIOS.ROM, 2026-10-20) finds RAM by writing to every
+  slot, and every slot is writable here: it takes slot 0 for pages 2-3.
+  RAM lives in slot 0 then (`ram_slot`), or a later page-3 switch wipes
+  it (hooks become FFh = RST 38h, the interrupt recurses). It also waits
+  in LPTOUT for the printer: ports 90h-91h are trapped, never busy.
 - vaeg before Rel.20261017 kept a compatible-mode HALT halted; use a
   current vaeg.
 - Keep `vars`/`end_of_program` (the start-up snapshot for the MSX reset)

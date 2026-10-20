@@ -43,6 +43,11 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
   ROM, disk image, dump or screenshot derived from them, into the
   repository or a distributed disk; never paste their bytes into commits,
   documents or issues. Use them only through `build/private/`.
+- **The MSX BIOS: never commit.** The maintainer's MSX1 main ROM (32 KiB,
+  Japanese, SHA-1 302afb5d...2821) is `~/MSX.rom`; same rules as the
+  commercial ROMs. `--msx-bios` puts it on `build/private/msx88va-msxbios.d88`
+  as MSXBIOS.ROM, which MSX.COM runs unpatched instead of C-BIOS (RAM in
+  slot 0 pages 2-3, printer ports trapped as never busy).
 - **C-BIOS compatibility.** A routine done natively must leave the Z80
   registers and flags as the C-BIOS routine does (games compute their
   next call from them; see DESIGN "M04").
@@ -64,6 +69,9 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
     # the private test disk: every ROM and ZIP of msxroms/ (the commercial
     # titles, the MSXdev ZIPs; C-BIOS's ZIP there is skipped)
     python3 -I tools/build_dos.py --cart ~/work/pc88va/pc88va-private-docs/msxroms
+    # the same with the real MSX BIOS: build/private/msx88va-msxbios.d88
+    python3 -I tools/build_dos.py --cart ~/work/pc88va/pc88va-private-docs/msxroms \
+      --msx-bios ~/MSX.rom
     python3 -I tools/build_m01.py                  # build/dist/m01test.d88
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 
