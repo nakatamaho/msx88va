@@ -57,14 +57,13 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
 
 ## Building
 
-    export MSX_CBIOS=/path/to/cbios-0.29a.zip
+    export MSX_CBIOS=~/work/pc88va/pc88va-private-docs/msxroms/cbios-0.29a.zip
     python3 -I tools/build_dos.py                  # build/dist/msx88va.d88
     python3 -I tools/build_dos.py --cart GAME.rom  # + build/private/msx88va-carts.d88
     python3 -I build/dist/get_games.py build/dist/msx88va.d88  # MSXdev games
-    # the private test disk: the commercial ROMs and the MSXdev games
+    # the private test disk: every ROM and ZIP of msxroms/ (the commercial
+    # titles, the MSXdev ZIPs; C-BIOS's ZIP there is skipped)
     python3 -I tools/build_dos.py --cart ~/work/pc88va/pc88va-private-docs/msxroms
-    python3 -I tools/get_games.py build/private/msx88va-carts.d88 \
-      -o build/private/msx88va-all.d88 --zips build/private/msxdev-zips
     python3 -I tools/build_m01.py                  # build/dist/m01test.d88
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 
