@@ -23,7 +23,9 @@
 
 """C-BIOS 0.29a (http://cbios.sourceforge.net/, two-clause BSD licence):
 the MSX1 main and logo ROMs, found by name in a zip file or directory
-($MSX_CBIOS or --cbios), checked by SHA-1, and patched for msx88va.
+($MSX_CBIOS or --cbios) and checked by SHA-1. They go on the disk as
+released; MSX.COM applies PATCHES at run time (tools/build_dos.py writes
+the table into it).
 
 The patches replace code that cannot work on the copied-page memory of
 msx88va or that would reach ports outside the I/O trap's ranges:
@@ -55,8 +57,8 @@ SHA1 = {
 PATCHES = [
     (0x0D1A, "afd3ff3cd3fe3c", "3ef0d3a8c3870d",
      "CHKRAM: no mapper ports, no RAM search; A8h = F0h, continue at 0D87h"),
-    (0x00A5, "c3", "37c9", "LPTOUT: SCF; RET (aborted)"),
-    (0x00A8, "c3", "afc9", "LPTSTT: XOR A; RET (not ready)"),
+    (0x00A5, "c3d9", "37c9", "LPTOUT: SCF; RET (aborted)"),
+    (0x00A8, "c303", "afc9", "LPTSTT: XOR A; RET (not ready)"),
     (0x026D, "f5cd60", "eded71", "FILVRM: CALLN 71h"),
     (0x0281, "cd5502", "eded71", "LDIRMV: CALLN 71h"),
     (0x0297, "ebcd60", "eded71", "LDIRVM: CALLN 71h"),
@@ -92,20 +94,21 @@ def _read(source: Path, name: str) -> bytes:
     raise SystemExit(f"error: {name} not found in {source}")
 
 
-def load(source: Path) -> tuple[bytes, bytes]:
-    """The patched main ROM (32 KiB) and the logo ROM (16 KiB)."""
-    roms = {}
+def load_original(source: Path) -> tuple[bytes, bytes]:
+    """The main ROM (32 KiB) and the logo ROM (16 KiB) as released, checked
+    by SHA-1; MSX.COM applies PATCHES at run time."""
+    roms = []
     for name in (MAIN, LOGO):
         data = _read(source, name)
         digest = hashlib.sha1(data).hexdigest()
         if digest != SHA1[name]:
             raise SystemExit(f"error: {name} has SHA-1 {digest}, expected {SHA1[name]} "
                              "(C-BIOS 0.29a)")
-        roms[name] = data
-    main = bytearray(roms[MAIN])
-    for offset, old, new, _ in PATCHES:
-        old_b, new_b = bytes.fromhex(old), bytes.fromhex(new)
-        if main[offset:offset + len(old_b)] != old_b:
-            raise SystemExit(f"error: unexpected bytes at {offset:04X}h")
-        main[offset:offset + len(new_b)] = new_b
-    return bytes(main), roms[LOGO]
+        roms.append(data)
+    return roms[0], roms[1]
+
+
+def licence_text(source: Path) -> bytes:
+    """C-BIOS's doc/cbios.txt (its licence and history), CR LF."""
+    data = _read(source, "cbios.txt")
+    return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")

@@ -1,0 +1,33 @@
+msx88va - an MSX1 cartridge player for the NEC PC-88VA and PC-88VA2
+
+This disk is MS-DOS 4.0 for the PC-88VA (FreeDOS-88VA project, MIT
+licence) with MSX.COM. AUTOEXEC.BAT runs MSX.
+
+  MSX [cartridge.ROM]
+
+MSX.COM needs, in the current directory:
+
+  CBIOS_M1.ROM, CBIOS_L1.ROM  C-BIOS 0.29a, an open-source MSX BIOS
+                              (two-clause BSD licence, see CBIOS.TXT)
+
+and plays a cartridge ROM file: 8, 16 or 32 KiB, without a mapper. Copy
+your own ROM files to this disk (under MS-DOS, or with add_files.py on a
+disk image). Without an argument MSX runs the one *.ROM file of the
+current directory other than C-BIOS, shows a menu when there are several,
+and starts C-BIOS alone when there is none. No cartridge ROM is included.
+
+Free games: on a PC with Python 3,
+
+  python3 get_games.py msx88va.d88
+
+downloads eight freeware MSX1 games of the MSXdev contest from
+msxdev.org and writes msx88va-games.d88 with them and GAMES.TXT (their
+authors and pages). The games belong to their authors.
+
+Keys: the VA keyboard is the MSX keyboard. Joystick 1: cursor keys,
+SPACE or Z (trigger A), X (trigger B). HELP resets the MSX. To leave,
+switch the machine off or reset it.
+
+Display: 256x192 inside a 320x200 screen. Sound: the PSG on the OPN's SSG.
+
+msx88va: two-clause BSD licence (LICENSE.TXT).

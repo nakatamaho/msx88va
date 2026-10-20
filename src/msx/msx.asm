@@ -22,9 +22,11 @@
 ;
 ; MSX: an MSX1 in the uPD9002's Z80-compatible mode (docs/DESIGN.md).
 ;
-; Loaded by src/boot/ipl.asm to 2000:0000; the builder (tools/build.py)
-; appends the C-BIOS main ROM (MAIN_SEG), its logo ROM (LOGO_SEG) and an
-; optional cartridge (CART_SEG, CART_PAGES 16 KiB pages from page 1).
+; Loaded to BASE:0000 by MSX.COM (src/dos/msxcom.asm) under MS-DOS 4.0,
+; which also reads the C-BIOS main ROM to MAIN_SEG, its logo ROM to
+; LOGO_SEG and an optional cartridge to CART_SEG, patches C-BIOS
+; (tools/cbios.py), and sets cart_pages (16 KiB pages from page 1) in the
+; header below.
 ;
 ; The Z80 sees one 64 KiB segment (Z80SEG). Writes to port A8h copy the
 ; selected slots' pages into it; RAM pages are copied back to their slot-3
@@ -40,20 +42,22 @@
 		cpu	186
 		org	0
 
-%ifndef CART_PAGES
-CART_PAGES	equ	0
+%ifndef BASE
+BASE		equ	3000h		; where MSX.COM puts this program
 %endif
 
 CODE_BYTES	equ	4000h		; this program, padded
-MAIN_SEG	equ	2400h		; C-BIOS main ROM, 32 KiB
-LOGO_SEG	equ	2c00h		; C-BIOS logo ROM, 16 KiB
-CART_SEG	equ	3000h		; cartridge, up to 32 KiB
-Z80SEG		equ	4000h		; what the Z80 sees
-RAMSEG		equ	5000h		; slot 3: 64 KiB RAM
-VRAMSEG		equ	6000h		; 16 KiB VRAM
-EMPTYSEG	equ	6400h		; 16 KiB of FFh: an empty page
-STACKSEG	equ	6800h
-SNAPSEG		equ	7800h		; the variables as at the first start
+MAIN_SEG	equ	BASE + 0400h	; C-BIOS main ROM, 32 KiB
+LOGO_SEG	equ	BASE + 0c00h	; C-BIOS logo ROM, 16 KiB
+CART_SEG	equ	BASE + 1000h	; cartridge, up to 32 KiB
+Z80SEG		equ	BASE + 2000h	; what the Z80 sees
+RAMSEG		equ	BASE + 3000h	; slot 3: 64 KiB RAM
+VRAMSEG		equ	BASE + 4000h	; 16 KiB VRAM
+EMPTYSEG	equ	BASE + 4400h	; 16 KiB of FFh: an empty page
+STACKSEG	equ	BASE + 4800h	; 8 KiB native stack
+STACK_TOP	equ	2000h
+SNAPSEG		equ	BASE + 4a00h	; the variables as at the first start
+MEMORY_TOP	equ	SNAPSEG + 200h	; paragraphs used, for MSX.COM
 
 BRKEM_VEC	equ	70h		; 40h-7Bh unused (technical manual, vector map)
 CALLN_VEC	equ	71h		; C-BIOS routines done natively (tools/cbios.py)
@@ -75,15 +79,27 @@ MAX_TILES	equ	64		; cells drawn per VRTC at most
 		db	0fh, 0ffh, %1
 %endmacro
 
+		jmp	start
+		align	4
+header		db	'MSX88VA', 0		; checked by MSX.COM
+		dw	MEMORY_TOP
+cart_pages	db	0			; set by MSX.COM: 0, 1 or 2
+
 start:		cli
 		mov	ax,cs
 		mov	ds,ax
 		mov	es,ax
 		mov	ax,STACKSEG
 		mov	ss,ax
-		mov	sp,0fffeh
+		mov	sp,STACK_TOP
 		cld
-		push	es			; the variables as they start, for
+		cmp	byte [cart_pages],1	; the cartridge's pages in slot 1
+		jb	.slots
+		mov	word [slot_seg + 4 * 2 + 1 * 2],CART_SEG
+		cmp	byte [cart_pages],2
+		jb	.slots
+		mov	word [slot_seg + 4 * 2 + 2 * 2],CART_SEG + 400h
+.slots:		push	es			; the variables as they start, for
 		mov	ax,SNAPSEG		; an MSX reset
 		mov	es,ax
 		mov	si,vars
@@ -274,6 +290,28 @@ vrtc:		push	bp
 		push	cs
 		pop	ds
 		inc	word [frames]
+%ifdef PROFILE					; vaeg tests: the Z80 PC at
+		mov	es,[gvram_seg]		; each VRTC (FFFFh: native),
+		mov	di,[prof_n]		; a ring of 4096 words at GVRAM
+		and	di,0fffh		; C200h
+		shl	di,1
+		mov	ax,0ffffh
+		cmp	word [bp + 4],Z80SEG
+		jne	.prof
+		mov	ax,[bp + 2]
+.prof:		mov	[es:0c200h + di],ax
+		inc	word [prof_n]
+		mov	ax,[prof_n]
+		mov	[es:0c000h],ax
+		push	ds			; and Z80 E380h-E47Fh at GVRAM
+		mov	ax,Z80SEG		; DF00h
+		mov	ds,ax
+		mov	si,0e380h
+		mov	di,0df00h
+		mov	cx,80h
+		rep	movsw
+		pop	ds
+%endif
 		call	kbd_scan
 		cmp	word [bp + 4],Z80SEG	; a reset only from the Z80 code
 		jne	.no_help
@@ -291,6 +329,9 @@ vrtc:		push	bp
 		call	render_step
 		call	sprite_step
 		call	sprite_flags
+%ifdef DUMP_VRAM				; vaeg tests: VRAM and the
+		call	dump_vram		; registers into spare GVRAM
+%endif
 		cmp	word [bp + 4],Z80SEG
 		jne	.eoi
 		call	try_inject
@@ -347,6 +388,31 @@ restart:	push	bp
 		rep	stosw
 		ret
 
+%ifdef DUMP_VRAM
+; VRAM at GVRAM offset 8000h, the eight registers at C000h. DS = CS.
+dump_vram:	push	ds
+		mov	es,[gvram_seg]
+		mov	di,8000h
+		mov	ax,VRAMSEG
+		mov	ds,ax
+		xor	si,si
+		mov	cx,2000h
+		rep	movsw
+		pop	ds
+		mov	si,vregs
+		mov	cx,4
+		rep	movsw
+		mov	ax,[log_n]
+		stosw
+		ret
+
+log_n		dw	0
+%endif
+
+%ifdef PROFILE
+prof_n		dw	0
+%endif
+
 ; With the VDP's interrupt line active (frame flag and R1 bit 5) and the
 ; Z80's interrupts enabled: push the Z80 PC on the Z80 stack, PC = 0038h,
 ; DI. BP: the frame above, DS = CS. Keeps every register but AX, BX.
@@ -392,6 +458,19 @@ trap:		push	bp
 		push	cs
 		pop	ds
 		inc	word [traps]
+%ifdef PROFILE					; vaeg tests: the Z80 PC of
+		push	es			; each trap, a ring of 2048
+		push	di			; words at GVRAM D200h
+		mov	es,[gvram_seg]
+		mov	di,[traps]
+		and	di,07ffh
+		shl	di,1
+		mov	[es:0d200h + di],si
+		mov	di,[traps]
+		mov	[es:0d000h],di
+		pop	di
+		pop	es
+%endif
 		cmp	bl,0d3h
 		jne	.not_out
 		add	word [bp + 2],2		; OUT (n),A
@@ -533,7 +612,9 @@ trap_ed:	push	cx
 ; The Z80 address of the CALLN selects the handler; the handler does the
 ; routine's work and its RET (bios_ret), or continues the Z80 code at an
 ; address in the routine (bios_cont, AX). On entry the registers are the
-; Z80's (AL = A, CX = BC, DX = DE, BX = HL) and DS is the Z80 segment.
+; Z80's (AL = A, CX = BC, DX = DE, BX = HL) and DS is the Z80 segment. A
+; handler that does the whole routine leaves the Z80 registers as the
+; C-BIOS routine does (games compute their next call from them).
 ; Frame: [bp] Z80 SP, [bp+2] IP (after the CALLN), [bp+4] CS, [bp+6] PSW,
 ; then the PUSHA image (B_AX ...).
 
@@ -556,7 +637,29 @@ bios_call:	push	bp
 		je	.found
 		add	si,4
 		jmp	.find
-.found:		jmp	[cs:si + 2]
+.found:
+%ifdef DUMP_VRAM				; log: routine, HL, BC, DE, frame
+		push	es
+		push	si
+		mov	si,[cs:log_n]
+		cmp	si,(4000h - 200h) / 10
+		jae	.full
+		push	ax
+		mov	es,[cs:gvram_seg]
+		imul	si,si,10
+		add	si,0c200h
+		mov	[es:si],di
+		mov	[es:si + 2],bx
+		mov	[es:si + 4],cx
+		mov	[es:si + 6],dx
+		mov	ax,[cs:frames]
+		mov	[es:si + 8],ax
+		inc	word [cs:log_n]
+		pop	ax
+.full:		pop	si
+		pop	es
+%endif
+		jmp	[cs:si + 2]
 
 bios_table	dw	026dh, h_filvrm		; A: data, BC: count, HL: VRAM
 		dw	0281h, h_ldirmv		; HL: VRAM, DE: RAM, BC: count
@@ -618,7 +721,8 @@ h_filvrm:	sti
 		push	cs
 		pop	ds
 		call	vram_written
-.done:		jmp	bios_ret
+.done:		mov	word [bp + B_CX],0	; B = C = 0, A kept
+		jmp	bios_ret
 
 h_ldirvm:	sti				; RAM -> VRAM (DS = Z80SEG)
 		jcxz	.done
@@ -636,7 +740,13 @@ h_ldirvm:	sti				; RAM -> VRAM (DS = Z80SEG)
 		push	cs
 		pop	ds
 		call	vram_written
-.done:		jmp	bios_ret
+.done:		mov	ax,[bp + B_BX]		; HL = DE, DE = HL + BC, BC = 0098h,
+		mov	cx,[bp + B_CX]		; A = 0
+		add	ax,cx
+		mov	cx,[bp + B_DX]
+		mov	[bp + B_BX],cx
+		mov	[bp + B_DX],ax
+		jmp	vram_block_end
 
 h_ldirmv:	sti				; VRAM -> RAM
 		jcxz	.done
@@ -652,11 +762,22 @@ h_ldirmv:	sti				; VRAM -> RAM
 		and	si,3fffh
 		mov	[cs:vaddr],si
 		mov	byte [cs:vfirst],0
-.done:		jmp	bios_ret
+.done:		mov	ax,[bp + B_BX]		; DE = HL, BC = 0098h, A = 0
+		mov	[bp + B_DX],ax
+		; fall through
+
+vram_block_end:	mov	word [bp + B_CX],0098h
+		mov	byte [bp + B_AX],0
+		and	byte [bp + 6],3fh	; Z = 1, S = 0 (DEC A to 0)
+		or	byte [bp + 6],40h
+		jmp	bios_ret
 
 h_setwrt:	push	cs
 		pop	ds
 		and	bh,3fh
+		mov	al,bh			; A = H & 3Fh | 40h
+		or	al,40h
+		mov	[bp + B_AX],al
 		mov	[vaddr],bx
 		mov	byte [vfirst],0
 		BIOS_EI
@@ -665,6 +786,7 @@ h_setwrt:	push	cs
 h_setrd:	push	cs
 		pop	ds
 		and	bh,3fh
+		mov	[bp + B_AX],bh		; A = H & 3Fh
 		mov	[vaddr],bx
 		mov	byte [vfirst],0
 		call	vread
@@ -1009,7 +1131,15 @@ vdp_data_r:	mov	byte [vfirst],0
 		pop	ax
 		ret
 
-vdp_stat_r:	mov	byte [vfirst],0
+; The Z80's DI is the V30's IF: a game polling the frame flag with
+; interrupts disabled would never see it set. Open the interrupts here for
+; one instruction, so that a pending VRTC is taken (vrtc, nested).
+vdp_stat_r:	test	byte [vstatus],80h
+		jnz	.read
+		sti
+		nop
+		cli
+.read:		mov	byte [vfirst],0
 		mov	al,[vstatus]
 		and	byte [vstatus],1fh
 		ret
@@ -1608,6 +1738,38 @@ tile_g1:	push	si
 		pop	si
 		ret
 
+; One Graphics II line: DS:SI its colour byte, DS:BX its pattern byte.
+; The colour pair is looked up only when the colour byte differs from the
+; line above's (%1 = 0: the first line); a line without dots is the
+; background word twice.
+%macro G2LINE 1
+		lodsb
+ %if %1
+		cmp	al,[cs:g2_colour]
+		je	%%pair
+ %endif
+		mov	[cs:g2_colour],al
+		xor	ah,ah
+		shl	ax,2
+		mov	bp,ax
+		mov	dx,[cs:pairs + bp]
+		mov	cx,[cs:pairs + bp + 2]
+%%pair:		mov	al,[bx]
+		inc	bx
+		or	al,al
+		jz	%%blank
+		xor	ah,ah
+		shl	ax,2
+		mov	bp,ax
+		LINE
+		jmp	%%next
+%%blank:	mov	ax,cx
+		stosw
+		stosw
+		add	di,STRIDE - 4
+%%next:
+%endmacro
+
 ; AX: third * 256 + name.
 tile_g2:	push	si
 		push	di
@@ -1618,21 +1780,9 @@ tile_g2:	push	si
 		mov	bx,ax
 		and	bx,[cs:r_pmask]
 		add	bx,[cs:r_pat]
-%rep 8
-		lodsb				; the line's colours
-		xor	ah,ah
-		shl	ax,2
-		push	bx
-		mov	bx,ax
-		mov	dx,[cs:pairs + bx]
-		mov	cx,[cs:pairs + bx + 2]
-		pop	bx
-		mov	al,[bx]
-		inc	bx
-		xor	ah,ah
-		shl	ax,2
-		mov	bp,ax
-		LINE
+		G2LINE	0
+%rep 7
+		G2LINE	1
 %endrep
 		pop	di
 		pop	si
@@ -1988,11 +2138,13 @@ flags_compute:	push	es
 		shl	bx,1
 .h:		shl	bx,cl
 		mov	[f_h],bx
-		; the sprite list
+		; the list of the sprites on picture lines, in order: BX the
+		; sprite number, DI the list index
 		mov	ax,VRAMSEG
 		mov	es,ax
 		mov	si,[r_sat]
-		xor	bx,bx			; BX: sprite number
+		xor	bx,bx
+		xor	di,di
 .list:		cmp	bx,32
 		jae	.listed
 		mov	al,[es:si]
@@ -2003,49 +2155,64 @@ flags_compute:	push	es
 		cmp	al,0e0h
 		jae	.ny
 		xor	ah,ah
-.ny:		shl	bx,1
-		mov	[f_y + bx],ax
+.ny:		mov	dx,ax			; on a picture line?
+		add	dx,[f_h]
+		jle	.skip
+		cmp	ax,192
+		jge	.skip
+		mov	[f_num + di],bl
+		shl	di,1
+		mov	[f_y + di],ax
 		mov	al,[es:si + 1]
 		xor	ah,ah
 		test	byte [es:si + 3],80h	; early clock
 		jz	.nx
 		sub	ax,32
-.nx:		mov	[f_x + bx],ax
-		shr	bx,1
+.nx:		mov	[f_x + di],ax
+		shr	di,1
 		mov	al,[es:si + 2]
 		test	byte [spr_mode],2
 		jz	.np
 		and	al,0fch
-.np:		mov	[f_pat + bx],al
-		add	si,4
+.np:		mov	[f_pat + di],al
+		inc	di
+.skip:		add	si,4
 		inc	bx
 		jmp	.list
-.listed:	mov	[f_n],bl
+.listed:	mov	ax,di
+		mov	[f_n],al
 		mov	al,bl
 		cmp	al,32
 		jb	.last
 		mov	al,31
 .last:		mov	[f_last],al
-		push	ds			; counts 0, fifth numbers FFh
+		push	ds
 		pop	es
-		mov	di,f_cnt
-		xor	ax,ax
-		mov	cx,96
-		rep	stosw
-		mov	di,f_fifth
-		dec	ax
-		mov	cx,96
-		rep	stosw
 		mov	byte [f_hit],0
-		; sprite J against the earlier ones, then its lines counted
-		mov	byte [f_j],0
-.jl:		mov	al,[f_j]
+		mov	byte [f_five],0ffh
+		cmp	byte [f_n],5		; five or more: the fifth sprite
+		jb	.pairs
+		call	fifth_sprite
+.pairs:		mov	byte [f_j],1		; each sprite against the earlier
+.jl:		mov	al,[f_j]		; ones, to the first collision
 		cmp	al,[f_n]
-		jae	.result
-		xor	ah,ah
+		jae	.done
+		call	sprite_rows
+		jge	.jnext
+		call	collide_j
+		cmp	byte [f_hit],0
+		jne	.done
+.jnext:		inc	byte [f_j]
+		jmp	.jl
+.done:		pop	es
+		ret
+
+; Sprite AL's rows on the picture: f_r0 = max(y, 0), f_r1 = min(y + h,
+; 192); flags as CMP f_r0, f_r1 (GE: none). DS = CS.
+sprite_rows:	xor	ah,ah
 		mov	bx,ax
 		shl	bx,1
-		mov	ax,[f_y + bx]		; rows max(y, 0) .. min(y + h, 192)
+		mov	ax,[f_y + bx]
 		mov	dx,ax
 		add	dx,[f_h]
 		or	ax,ax
@@ -2054,37 +2221,92 @@ flags_compute:	push	es
 .r0:		cmp	dx,192
 		jle	.r1
 		mov	dx,192
-.r1:		cmp	ax,dx
-		jge	.jnext
-		mov	[f_r0],ax
+.r1:		mov	[f_r0],ax
 		mov	[f_r1],dx
-		cmp	byte [f_hit],0
-		jne	.count
-		call	collide_j
-.count:		mov	si,[f_r0]
-.cl:		mov	al,[f_cnt + si]
-		cmp	al,4
-		jne	.inc
-		cmp	byte [f_fifth + si],0ffh
-		jne	.inc
-		mov	ah,[f_j]
-		mov	[f_fifth + si],ah
-.inc:		cmp	al,0ffh
-		je	.cn
-		inc	byte [f_cnt + si]
-.cn:		inc	si
+		cmp	ax,dx
+		ret
+
+; f_five: the number of the fifth sprite on the first line covered by
+; five, from a difference array of the rows each sprite covers. DS = ES =
+; CS.
+fifth_sprite:	mov	di,f_diff
+		xor	ax,ax
+		mov	cx,193
+		rep	stosw
+		xor	bx,bx			; +1 at the first row, -1 after
+.d:		mov	al,bl
+		push	bx
+		call	sprite_rows
+		jge	.dn
+		mov	si,ax
+		shl	si,1
+		inc	word [f_diff + si]
+		mov	si,dx
+		shl	si,1
+		dec	word [f_diff + si]
+.dn:		pop	bx
+		inc	bl
+		cmp	bl,[f_n]
+		jb	.d
+		mov	si,f_diff		; the first line with five
+		xor	dx,dx
+		xor	cx,cx			; CX: the line
+.l:		lodsw
+		add	dx,ax
+		cmp	dx,5
+		jge	.line
+		inc	cx
+		cmp	cx,192
+		jb	.l
+		ret
+.line:		xor	bx,bx			; the fifth sprite covering line CX
+		mov	ah,0
+.s:		push	ax
+		mov	al,bl
+		push	bx
+		push	cx
+		call	sprite_rows
+		pop	cx
+		pop	bx
+		pop	ax
+		cmp	cx,[f_r0]
+		jl	.sn
+		cmp	cx,[f_r1]
+		jge	.sn
+		inc	ah
+		cmp	ah,5
+		jne	.sn
+		mov	al,[f_num + bx]
+		mov	[f_five],al
+		ret
+.sn:		inc	bl
+		cmp	bl,[f_n]
+		jb	.s
+		ret
+
+; AL = the number of sprites before f_j covering row SI. Keeps SI.
+rank_j:		push	cx
+		xor	cx,cx
+		xor	bx,bx
+.k:		cmp	bl,[f_j]
+		jae	.done
+		push	bx
+		mov	al,bl
+		push	word [f_r0]
+		push	word [f_r1]
+		call	sprite_rows
+		cmp	si,[f_r0]
+		jl	.no
 		cmp	si,[f_r1]
-		jb	.cl
-.jnext:		inc	byte [f_j]
-		jmp	.jl
-.result:	mov	si,f_fifth		; the first line with a fifth
-		mov	cx,192
-.fl:		lodsb
-		cmp	al,0ffh
-		jne	.found
-		loop	.fl
-.found:		mov	[f_five],al
-		pop	es
+		jge	.no
+		inc	cx
+.no:		pop	word [f_r1]
+		pop	word [f_r0]
+		pop	bx
+		inc	bl
+		jmp	.k
+.done:		mov	al,cl
+		pop	cx
 		ret
 
 ; Sprite f_j against sprites 0 .. f_j - 1 on rows f_r0 .. f_r1 - 1; sets
@@ -2120,9 +2342,12 @@ collide_j:	mov	byte [f_i],0
 		jge	.inext
 		mov	si,ax
 		mov	[f_rend],dx
-.row:		cmp	byte [f_cnt + si],4	; J not shown on this line
+.row:		cmp	byte [f_n],5		; with five or more, J must be one
+		jb	.shown			; of the first four on the line
+		call	rank_j
+		cmp	al,4
 		jae	.rnext
-		call	collide_row
+.shown:		call	collide_row
 		cmp	byte [f_hit],0
 		jne	.ret
 .rnext:		inc	si
@@ -2132,61 +2357,85 @@ collide_j:	mov	byte [f_i],0
 		jmp	.il
 .ret:		ret
 
-; Sprites f_i and f_j on picture row SI. Keeps SI.
+; Sprites f_i and f_j on picture row SI, a whole row at once: each row as a
+; 32-bit mask (column 0 in the top bit, dots doubled when magnified), the
+; right one shifted by the X difference, ANDed, clipped to columns 0-255.
+; Sets f_hit. Keeps SI.
 collide_row:	push	si
 		mov	al,[f_i]
-		call	row_bits
-		mov	[f_wi],ax
+		call	row_mask
+		mov	[f_mi],ax
+		mov	[f_mi + 2],bx
 		mov	[f_xi],dx
-		or	ax,ax
+		or	ax,bx
 		jz	.ret
 		mov	al,[f_j]
-		call	row_bits
-		mov	[f_wj],ax
-		mov	[f_xj],dx
-		or	ax,ax
+		call	row_mask		; BX:AX = J's mask, DX = its X
+		mov	cx,ax
+		or	cx,bx
 		jz	.ret
-		mov	ax,[f_xi]		; columns max(xi, xj, 0) ..
-		cmp	ax,dx			; min(xi, xj) + h, at most 256
-		jge	.c0
-		mov	ax,dx
-.c0:		or	ax,ax
-		jns	.c0b
-		xor	ax,ax
-.c0b:		mov	dx,[f_xi]
-		cmp	dx,[f_xj]
-		jle	.c1
-		mov	dx,[f_xj]
-.c1:		add	dx,[f_h]
-		cmp	dx,256
-		jle	.c1b
-		mov	dx,256
-.c1b:		mov	cl,[f_mag]
-.col:		cmp	ax,dx
-		jge	.ret
-		mov	bx,ax			; dot of I
-		sub	bx,[f_xi]
-		shr	bx,cl
-		mov	si,[f_wi]
-		xchg	cx,bx
-		shl	si,cl
-		xchg	cx,bx
-		test	si,8000h
-		jz	.cnext
-		mov	bx,ax			; dot of J
-		sub	bx,[f_xj]
-		shr	bx,cl
-		mov	si,[f_wj]
-		xchg	cx,bx
-		shl	si,cl
-		xchg	cx,bx
-		test	si,8000h
-		jz	.cnext
+		mov	di,[f_mi]		; DI:SI = I's mask
+		mov	si,[f_mi + 2]
+		mov	cx,[f_xi]
+		cmp	cx,dx			; the left one in DI:SI, at CX
+		jle	.order
+		xchg	di,ax
+		xchg	si,bx
+		xchg	cx,dx
+.order:		sub	dx,cx			; DX: X difference, 0-31
+		jz	.and
+.shift:		shr	bx,1
+		rcr	ax,1
+		dec	dx
+		jnz	.shift
+.and:		and	ax,di			; BX:AX = the dots of both
+		and	bx,si
+		or	cx,cx			; columns left of the picture
+		jns	.right
+		neg	cx
+.lclip:		shl	ax,1
+		rcl	bx,1
+		loop	.lclip
+		jmp	.test
+.right:		mov	dx,256			; columns 256 - X .. 31 cleared
+		sub	dx,cx
+		cmp	dx,32
+		jae	.test
+		mov	cx,32
+		sub	cx,dx
+.rclip:		shr	bx,1
+		rcr	ax,1
+		loop	.rclip
+.test:		or	ax,bx
+		jz	.ret
 		mov	byte [f_hit],1
-		jmp	.ret
-.cnext:		inc	ax
-		jmp	.col
 .ret:		pop	si
+		ret
+
+; Sprite AL on picture row SI: BX:AX = its row as a 32-bit mask (BX the
+; left 16 columns), DX = its X. Keeps SI.
+row_mask:	call	row_bits		; AX: the pattern row, AH left
+		cmp	byte [f_mag],0
+		jne	.mag
+		mov	bx,ax
+		xor	ax,ax
+		ret
+.mag:		push	dx			; each dot doubled
+		push	ax
+		mov	bl,ah
+		xor	bh,bh
+		shl	bx,1
+		mov	bx,[dbl + bx]
+		xchg	bl,bh
+		pop	ax
+		push	bx
+		xor	ah,ah
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[dbl + bx]
+		xchg	al,ah
+		pop	bx
+		pop	dx
 		ret
 
 ; Sprite AL on picture row SI: AX = its pattern row (left byte high; the
@@ -2442,17 +2691,9 @@ expand:
  %assign p p + 1
 %endrep
 
-; Slot s page p -> segment (0: empty).
-%assign c1 0
-%assign c2 0
-%if CART_PAGES >= 1
- %assign c1 CART_SEG
-%endif
-%if CART_PAGES >= 2
- %assign c2 CART_SEG + 400h
-%endif
+; Slot s page p -> segment (0: empty). Slot 1 is set from cart_pages.
 slot_seg	dw	MAIN_SEG, MAIN_SEG + 400h, LOGO_SEG, 0
-		dw	0, c1, c2, 0
+		dw	0, 0, 0, 0
 		dw	0, 0, 0, 0
 		dw	RAMSEG, RAMSEG + 400h, RAMSEG + 800h, RAMSEG + 0c00h
 
@@ -2509,6 +2750,7 @@ spr_ys		db	1
 spr_is		db	5
 any_pend	db	0
 backdrop	db	0
+g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0
 opn_io		db	0
 ppi_a		db	0
@@ -2534,17 +2776,15 @@ f_h		dw	0
 f_r0		dw	0
 f_r1		dw	0
 f_rend		dw	0
-f_wi		dw	0
-f_wj		dw	0
+f_mi		dw	0, 0
 f_xi		dw	0
-f_xj		dw	0
 f_pat		times	32 db 0
-f_cnt		times	192 db 0
-f_fifth		times	192 db 0
+f_num		times	32 db 0
+f_diff		times	193 dw 0
 f_n		db	0
 f_last		db	0
 f_hit		db	0
-f_five		db	0ffh
+f_five		db	0ffh			; FFh: no fifth sprite
 f_dirty		db	1
 f_mag		db	0
 f_i		db	0
