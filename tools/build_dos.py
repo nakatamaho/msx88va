@@ -38,7 +38,9 @@ from files at run time. Outputs, in build/ (ignored by git):
                                 vaeg)
     build/private/msx88va-carts.d88
                                 with --cart: the disk with those cartridge
-                                files added (private, never distributed)
+                                files added (private, never distributed);
+                                --cart takes ROM files, ZIPs (the ROM
+                                without a "[a1]"-style tag) or directories
 
 --define passes NASM defines to src/msx/msx.asm (the test options of
 docs/DESIGN.md: TEST_RESET=n, DUMP_VRAM, PROFILE).
@@ -49,6 +51,7 @@ import hashlib
 import re
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -85,6 +88,23 @@ def dos_name(path: Path) -> str:
     return stem + ".ROM"
 
 
+def cartridges(path: Path) -> list[tuple[str, bytes]]:
+    """(DOS name, ROM) for --cart: a ROM file, a ZIP (its one ROM without an
+    alternative-dump tag such as "[a1]"), or a directory of both."""
+    if path.is_dir():
+        found = sorted(p for p in path.iterdir()
+                       if p.suffix.lower() in (".rom", ".zip"))
+        return [c for p in found for c in cartridges(p)]
+    if path.suffix.lower() != ".zip":
+        return [(dos_name(path), path.read_bytes())]
+    with zipfile.ZipFile(path) as archive:
+        members = [m for m in archive.namelist()
+                   if m.lower().endswith(".rom") and "[" not in m.rsplit("/", 1)[-1]]
+        if len(members) != 1:
+            raise SystemExit(f"error: {path}: no single ROM without [..] tag")
+        return [(dos_name(Path(members[0])), archive.read(members[0]))]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cbios", type=Path, default=cbios.default_source(),
@@ -92,7 +112,8 @@ def main() -> int:
     parser.add_argument("--msdos4", type=Path, default=dosdisk.MSDOS4_DEFAULT,
                         help=f"msdos4-pc88va-2hd.d88 of {dosdisk.MSDOS4_RELEASE}")
     parser.add_argument("--cart", type=Path, action="append", default=[],
-                        help="cartridge ROM for the private disk (repeatable)")
+                        help="cartridge ROM, ZIP or directory of them for the private "
+                        "disk (repeatable)")
     parser.add_argument("--define", action="append", default=[],
                         help="NASM define for src/msx/msx.asm (tests)")
     parser.add_argument("--output-dir", type=Path, default=REPO / "build")
@@ -129,14 +150,17 @@ def main() -> int:
     print(f"{dist / 'msx88va.d88'}: MSX.COM ({len(com)} bytes), C-BIOS, "
           f"{len(cbios.PATCHES)} patches applied at run time; SHA-256 {digest}")
     if args.cart:
-        for path in args.cart:
-            if dos_name(path) in files:
-                raise SystemExit(f"error: {path}: {dos_name(path)} is taken")
-            files[dos_name(path)] = path.read_bytes()
+        carts = [c for path in args.cart for c in cartridges(path)]
+        for name, data in carts:
+            if name in files:
+                raise SystemExit(f"error: two cartridges named {name}")
+            if len(data) not in (0x2000, 0x4000, 0x8000) or data[:2] != b"AB":
+                raise SystemExit(f"error: {name} is not an 8, 16 or 32 KiB cartridge")
+            files[name] = data
         output = args.output_dir / "private" / "msx88va-carts.d88"
         dosdisk.make_disk(args.msdos4, files, output)
         digest = hashlib.sha256(output.read_bytes()).hexdigest()
-        names = ", ".join(dos_name(p) for p in args.cart)
+        names = ", ".join(name for name, _ in carts)
         print(f"{output}: with {names} (private); SHA-256 {digest}")
     return 0
 

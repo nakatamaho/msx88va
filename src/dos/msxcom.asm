@@ -50,7 +50,7 @@
 MAIN_SEG	equ	BASE + 0400h	; as in src/msx/msx.asm
 LOGO_SEG	equ	BASE + 0c00h
 CART_SEG	equ	BASE + 1000h
-MAX_CARTS	equ	9
+MAX_CARTS	equ	35		; keys 1-9, A-Z
 %endif
 
 start:		mov	sp,stack_top
@@ -208,40 +208,62 @@ choose_cart:	mov	si,81h			; the command line
 .some:		mov	si,cart_list
 		cmp	al,1
 		je	.take_si
-		mov	dx,s_menu		; a menu
-		call	print
-		mov	bl,'1'
+		mov	dx,s_menu		; a menu, four items a line,
+		call	print			; keys 1-9 then A-Z
+		xor	bx,bx			; BL: the item
 		mov	si,cart_list
-		xor	ch,ch
-		mov	cl,[carts]
-.item:		mov	dl,bl
+.item:		mov	al,bl
+		call	item_key
+		mov	dl,al
 		mov	ah,02h
 		int	21h
 		mov	dl,' '
 		int	21h
+		mov	cx,18			; the column width after "k "
 		push	si
 .name:		lodsb
 		or	al,al
-		jz	.nl
+		jz	.pad
 		mov	dl,al
 		mov	ah,02h
 		int	21h
+		dec	cx
 		jmp	.name
-.nl:		pop	si
+.pad:		pop	si
 		add	si,13
-		mov	dx,s_crlf
-		call	print
 		inc	bl
-		loop	.item
+		cmp	bl,[carts]
+		je	.last
+		test	bl,3
+		jz	.row
+.space:		mov	dl,' '
+		mov	ah,02h
+		int	21h
+		loop	.space
+		jmp	.item
+.row:		mov	dx,s_crlf
+		call	print
+		jmp	.item
+.last:		mov	dx,s_crlf
+		call	print
 		mov	dx,s_choose
 		call	print
 .key:		mov	ah,08h
 		int	21h
 		cmp	al,'0'
 		je	.none
-		sub	al,'1'
+		and	al,0dfh			; letters upper case, digits
+		cmp	al,'A'			; 31h-39h -> 11h-19h
+		jae	.letter
+		sub	al,11h
 		jb	.key
-		cmp	al,[carts]
+		cmp	al,9
+		jae	.key
+		jmp	.index
+.letter:	sub	al,'A' - 9
+		cmp	al,9
+		jb	.key
+.index:		cmp	al,[carts]
 		jae	.key
 		mov	ah,13
 		mul	ah
@@ -253,6 +275,13 @@ choose_cart:	mov	si,81h			; the command line
 		ret
 .none:		mov	byte [cart_name],0
 		ret
+
+; AL: a menu item (0-34) -> AL: its key, 1-9 then A-Z.
+item_key:	add	al,'1'
+		cmp	al,'9'
+		jbe	.ret
+		add	al,'A' - '9' - 1
+.ret:		ret
 
 ; ---------------------------------------------------------------------------
 ; The cartridge into CART_SEG; cart_pages in the payload's header.
