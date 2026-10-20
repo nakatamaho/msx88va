@@ -183,7 +183,40 @@ untested.
   a frame, so the game runs late while it is on), PROFILE (the Z80 PC at
   every VRTC, a ring at GVRAM C200h).
 
-## Disks (MS-DOS 4.0)
+## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
+
+Goal: draw Graphics I (and text mode) cells as TSP characters instead of
+GVRAM tiles, so a cell costs one TVRAM word instead of ~400 cycles.
+
+- User-defined characters are the gaiji RAM: battery-backed, B0800h-B1FBFh
+  of the backup RAM (manual 3.4; B0000h-B07FFh is the JFP learning area,
+  B1FC0h- the memory switches), 188 full-width characters (JIS 7621h-),
+  byte access only, through the system memory window with port 153h SMBC
+  = 9 (kanji ROM #2). vaeg's layout (io/cgromva.c): character (j1, j2) at
+  ((j2 & 60h) << 6) + ((j1 & 1) << 10) + ((j2 & 1Fh) << 5), row r at 2r
+  (left half) and 2r + 1 (right half). The text BIOS writes it too
+  (INT 83h AH = 21h, as SETGAIJI, 88VA User's Club library 1989).
+- One MSX cell = one half-width character: in 40-column mode (port 30h
+  80CM = 0) the TSP doubles a character's 8 dots over an even and the next
+  odd column holding the same code (manual 4.2.6), so the 188 characters
+  give 376 cells, enough for 256 patterns. Colours: attribute mode 0,
+  foreground and background per character, as Graphics I's per 8
+  patterns. Sprites are always above text (manual 4.1.3).
+- The TSP counts rasters at the monitor's rate: 400 a frame on a 24 kHz
+  monitor (vaeg's VA and VA2; the BIOS's split screen 0 has RH = 400, 16
+  rasters a line), 200 on 15 kHz. A cell is 16 rasters (each pattern row
+  twice) or 8. PCGTEST picks it from the BIOS's split screen heights.
+- PCGTEST (build/dist/pcgtest.d88, `tools/build_pcg.py`) shows the 256
+  patterns over GVRAM squares with two sprites, the status in hex; keys
+  1-5 switch 80CM, ANKM, BIOS/direct writes, the raster offset and 8/16
+  rasters a line; ESC or Q puts the gaiji RAM back from GAIJI.BAK (saved
+  only when absent, so a reset keeps the original) and exits.
+- vaeg, 2026-10-21: the patterns show, 40-column doubling and raster
+  offset as expected, the read-back matches the layout above (status 01),
+  ANKM = 1 shows only rows 0-7 of a 16-raster character, the restore
+  leaves the gaiji RAM as it was. Hardware: pending (VA, VA2).
+
+
 
 - Every disk is msdos4-va.2 (`msdos4-pc88va-2hd.d88`, MIT licence) with
   files added (`tools/dosdisk.py`, vaeg's `pcengine_disk.py`); the first

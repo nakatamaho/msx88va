@@ -74,6 +74,7 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
     python3 -I tools/build_dos.py --cart ~/work/pc88va/pc88va-private-docs/msxroms \
       --msx-bios ~/work/pc88va/pc88va-private-docs/msxroms/MSX.rom
     python3 -I tools/build_m01.py                  # build/dist/m01test.d88
+    python3 -I tools/build_pcg.py                  # build/dist/pcgtest.d88 (M05)
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 
 Test options for the MSX program: `--define TEST_RESET=n`, `DUMP_VRAM`,
