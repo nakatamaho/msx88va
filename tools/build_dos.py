@@ -48,6 +48,7 @@ docs/DESIGN.md: TEST_RESET=n, DUMP_VRAM, PROFILE).
 
 import argparse
 import hashlib
+import io
 import re
 import shutil
 import sys
@@ -57,6 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbios  # noqa: E402
 import dosdisk  # noqa: E402
+import get_games  # noqa: E402
 
 REPO = dosdisk.REPO
 AUTOEXEC = b"@ECHO OFF\r\nPATH A:\\\r\nPROMPT $P$G\r\nVER\r\nMSX\r\n"
@@ -89,15 +91,23 @@ def dos_name(path: Path) -> str:
 
 
 def cartridges(path: Path) -> list[tuple[str, bytes]]:
-    """(DOS name, ROM) for --cart: a ROM file, a ZIP (its one ROM without an
-    alternative-dump tag such as "[a1]"), or a directory of both."""
+    """(DOS name, ROM) for --cart: a ROM file, a ZIP, or a directory of both
+    (C-BIOS's ZIP skipped). An MSXdev ZIP of tools/get_games.py gives the
+    ROM and name listed there; another ZIP its one ROM without an
+    alternative-dump tag such as "[a1]"."""
     if path.is_dir():
         found = sorted(p for p in path.iterdir()
-                       if p.suffix.lower() in (".rom", ".zip"))
+                       if p.suffix.lower() in (".rom", ".zip")
+                       and not p.name.lower().startswith("cbios"))
         return [c for p in found for c in cartridges(p)]
     if path.suffix.lower() != ".zip":
         return [(dos_name(path), path.read_bytes())]
-    with zipfile.ZipFile(path) as archive:
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for name, _, _, _, _, sha256, member in get_games.GAMES:
+            if digest == sha256:
+                return [(name, archive.read(member))]
         members = [m for m in archive.namelist()
                    if m.lower().endswith(".rom") and "[" not in m.rsplit("/", 1)[-1]]
         if len(members) != 1:
