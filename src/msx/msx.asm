@@ -30,8 +30,8 @@
 ;
 ; The Z80 sees one 64 KiB segment (Z80SEG). Writes to port A8h copy the
 ; selected slots' pages into it; RAM pages are copied back to their slot-3
-; store (RAMSEG) first. The I/O trap catches ports 98h-99h (VDP) and
-; A0h-ABh (PSG, PPI); C-BIOS's VDP, PSG and keyboard routines call native
+; store (RAMSEG; slot 3, or slot 0 for an MSX BIOS) first. The I/O trap catches ports 90h-99h (printer,
+; VDP) and A0h-ABh (PSG, PPI); C-BIOS's VDP, PSG and keyboard routines call native
 ; code directly (CALLN, tools/cbios.py). The VRTC interrupt reads the VA
 ; keyboard into the MSX key matrix, sets the VDP's frame flag, redraws the
 ; changed cells of the picture from the emulated VRAM, and injects the
@@ -84,6 +84,8 @@ MAX_TILES	equ	64		; cells drawn per VRTC at most
 header		db	'MSX88VA', 0		; checked by MSX.COM
 		dw	MEMORY_TOP
 cart_pages	db	0			; set by MSX.COM: 0, 1 or 2
+ram_slot	db	3			; set by MSX.COM: 3, or 0 (an MSX
+						; BIOS: RAM in slot 0 pages 2-3)
 
 start:		cli
 		mov	ax,cs
@@ -99,7 +101,15 @@ start:		cli
 		cmp	byte [cart_pages],2
 		jb	.slots
 		mov	word [slot_seg + 4 * 2 + 2 * 2],CART_SEG + 400h
-.slots:		push	es			; the variables as they start, for
+.slots:		cmp	byte [ram_slot],0	; an MSX BIOS takes the first slot
+		jne	.snap			; whose pages 2-3 are writable, and
+		mov	ax,RAMSEG + 800h	; every slot is here: RAM in slot 0
+		mov	[slot_seg + 2 * 2],ax
+		mov	word [slot_seg + 3 * 8 + 2 * 2],0
+		add	ax,400h
+		mov	[slot_seg + 3 * 2],ax
+		mov	word [slot_seg + 3 * 8 + 3 * 2],0
+.snap:		push	es			; the variables as they start, for
 		mov	ax,SNAPSEG		; an MSX reset
 		mov	es,ax
 		mov	si,vars
@@ -496,7 +506,7 @@ trap:		push	bp
 
 ; Port AH, data AL. Keeps every register but AX, BX, SI.
 port_out:	mov	bl,ah
-		sub	bl,98h
+		sub	bl,90h
 		cmp	bl,PORTS
 		jae	.ret
 		xor	bh,bh
@@ -506,7 +516,7 @@ port_out:	mov	bl,ah
 
 ; Port AH -> AL. Keeps every register but AX, BX, SI.
 port_in:	mov	bl,ah
-		sub	bl,98h
+		sub	bl,90h
 		cmp	bl,PORTS
 		jae	io_ff
 		xor	bh,bh
@@ -516,13 +526,21 @@ port_in:	mov	bl,ah
 io_ff:		mov	al,0ffh
 io_none:	ret
 
-PORTS		equ	14h			; 98h-ABh
-out_table	dw	vdp_data_w, vdp_ctrl_w
+lpt_stat_r:	mov	al,0fdh			; bit 1 clear: ready
+		ret
+
+; 90h-91h: the printer, never busy, its output dropped (an MSX BIOS
+; waits in LPTOUT for a printer that is ready).
+PORTS		equ	1ch			; 90h-ABh
+out_table	times	8 dw io_none		; 90h-97h
+		dw	vdp_data_w, vdp_ctrl_w
 		times	6 dw io_none		; 9Ah-9Fh (not trapped)
 		dw	psg_addr_w, psg_data_w, io_none, io_none
 		times	4 dw io_none		; A4h-A7h
 		dw	ppi_a_w, io_none, ppi_c_w, ppi_ctrl_w
-in_table	dw	vdp_data_r, vdp_stat_r
+in_table	dw	lpt_stat_r		; 90h
+		times	7 dw io_ff		; 91h-97h
+		dw	vdp_data_r, vdp_stat_r
 		times	6 dw io_ff
 		dw	io_ff, io_ff, psg_data_r, io_ff
 		times	4 dw io_ff
@@ -1387,28 +1405,28 @@ ppi_a_w:	push	cx
 		je	.next
 		mov	ah,[cur_slot + bx]
 		mov	[cur_slot + bx],al
-		cmp	ah,3			; slot 3: RAM, save it
-		jne	.load
+		cmp	ah,3			; none yet (FFh)
+		ja	.load
+		push	ax			; the old slot's page: if it is
+		mov	al,ah			; RAM, save it
+		call	page_seg
+		mov	cx,ax
+		sub	cx,RAMSEG
+		cmp	cx,1000h
+		jae	.kept
 		push	ds
-		mov	si,bx			; Z80 page -> RAMSEG page
+		mov	es,ax
+		mov	si,bx			; Z80 page -> its RAM store
 		mov	cl,14
 		shl	si,cl
 		xor	di,di
-		mov	cx,bx
-		shl	cx,10
-		add	cx,RAMSEG
-		mov	es,cx
 		mov	cx,Z80SEG
 		mov	ds,cx
 		mov	cx,2000h
 		rep	movsw
 		pop	ds
-.load:		mov	si,bx			; slot AL's page BX
-		shl	si,1
-		mov	ah,0
-		shl	ax,3
-		add	si,ax
-		mov	ax,[slot_seg + si]
+.kept:		pop	ax
+.load:		call	page_seg		; slot AL's page BX
 		or	ax,ax
 		jnz	.copy
 		mov	ax,EMPTYSEG
@@ -1432,6 +1450,15 @@ ppi_a_w:	push	cx
 		pop	di
 		pop	dx
 		pop	cx
+		ret
+
+; Slot AL's page BX -> AX: its segment (0: empty). Uses SI.
+page_seg:	mov	si,bx
+		shl	si,1
+		mov	ah,0
+		shl	ax,3
+		add	si,ax
+		mov	ax,[slot_seg + si]
 		ret
 
 ; ---------------------------------------------------------------------------
@@ -2541,8 +2568,8 @@ s_fail		db	'Graphics BIOS call failed.', 13, 10, 0
 		align	2
 vars:
 
-; Block 1 = 98h-99h, block 2 = A0h-ABh (start, end; low byte first).
-trap_ranges	db	98h, 0, 99h, 0, 0a0h, 0, 0abh, 0
+; Block 1 = 90h-99h, block 2 = A0h-ABh (start, end; low byte first).
+trap_ranges	db	90h, 0, 99h, 0, 0a0h, 0, 0abh, 0	; printer, VDP; PSG, PPI
 
 ; VA key (matrix port, bit) -> MSX key (row, bit), as in vaeg's io/serial.c
 ; and the MSX international matrix. Row 11 is joystick port 1.

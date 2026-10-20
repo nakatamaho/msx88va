@@ -41,6 +41,11 @@ from files at run time. Outputs, in build/ (ignored by git):
                                 files added (private, never distributed);
                                 --cart takes ROM files, ZIPs (the ROM
                                 without a "[a1]"-style tag) or directories
+    build/private/msx88va-msxbios.d88
+                                with --msx-bios: the same with an MSX1
+                                main ROM as MSXBIOS.ROM, which MSX.COM runs
+                                instead of C-BIOS (private, never
+                                distributed)
 
 --define passes NASM defines to src/msx/msx.asm (the test options of
 docs/DESIGN.md: TEST_RESET=n, DUMP_VRAM, PROFILE).
@@ -115,6 +120,17 @@ def cartridges(path: Path) -> list[tuple[str, bytes]]:
         return [(dos_name(Path(members[0])), archive.read(members[0]))]
 
 
+def bsave_body(path: Path) -> bytes:
+    """A file's bytes, without the 7-byte header of an MSX-BASIC BSAVE file
+    (FEh, start, end, run address) when it has one."""
+    data = path.read_bytes()
+    if len(data) > 7 and data[0] == 0xFE:
+        start, end = (int.from_bytes(data[i:i + 2], "little") for i in (1, 3))
+        if len(data) == 7 + end - start + 1:
+            return data[7:]
+    return data
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cbios", type=Path, default=cbios.default_source(),
@@ -124,6 +140,10 @@ def main() -> int:
     parser.add_argument("--cart", type=Path, action="append", default=[],
                         help="cartridge ROM, ZIP or directory of them for the private "
                         "disk (repeatable)")
+    parser.add_argument("--msx-bios", type=Path, nargs="+", metavar="FILE",
+                        help="an MSX1 main ROM (private) for a second private disk, as "
+                        "MSXBIOS.ROM: one 32 KiB file, or 0000h-3FFFh and "
+                        "4000h-7FFFh in two; BSAVE headers are removed")
     parser.add_argument("--define", action="append", default=[],
                         help="NASM define for src/msx/msx.asm (tests)")
     parser.add_argument("--output-dir", type=Path, default=REPO / "build")
@@ -159,7 +179,7 @@ def main() -> int:
     digest = hashlib.sha256((dist / "msx88va.d88").read_bytes()).hexdigest()
     print(f"{dist / 'msx88va.d88'}: MSX.COM ({len(com)} bytes), C-BIOS, "
           f"{len(cbios.PATCHES)} patches applied at run time; SHA-256 {digest}")
-    if args.cart:
+    if args.cart or args.msx_bios:
         carts = [c for path in args.cart for c in cartridges(path)]
         for name, data in carts:
             if name in files:
@@ -167,11 +187,22 @@ def main() -> int:
             if len(data) not in (0x2000, 0x4000, 0x8000) or data[:2] != b"AB":
                 raise SystemExit(f"error: {name} is not an 8, 16 or 32 KiB cartridge")
             files[name] = data
-        output = args.output_dir / "private" / "msx88va-carts.d88"
+        names = ", ".join(name for name, _ in carts) or "no cartridge"
+        if args.cart:
+            output = args.output_dir / "private" / "msx88va-carts.d88"
+            dosdisk.make_disk(args.msdos4, files, output)
+            print(f"{output}: with {names} (private)")
+    if args.msx_bios:
+        bios = b"".join(bsave_body(path) for path in args.msx_bios)
+        if len(bios) != 0x8000 or bios[:2] != b"\xf3\xc3":
+            raise SystemExit(f"error: {len(bios)} bytes: not an MSX1 main ROM "
+                             "(32 KiB, DI; JP at 0000h); 0000h-3FFFh alone is not enough, "
+                             "the start-up code jumps into 4000h-7FFFh")
+        files["MSXBIOS.ROM"] = bios
+        output = args.output_dir / "private" / "msx88va-msxbios.d88"
         dosdisk.make_disk(args.msdos4, files, output)
-        digest = hashlib.sha256(output.read_bytes()).hexdigest()
-        names = ", ".join(name for name, _ in carts)
-        print(f"{output}: with {names} (private); SHA-256 {digest}")
+        print(f"{output}: MSXBIOS.ROM (SHA-1 {hashlib.sha1(bios).hexdigest()}), "
+              f"with {names} (private)")
     return 0
 
 
