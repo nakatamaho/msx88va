@@ -140,6 +140,29 @@ compatible-mode timing is not measured. Confirm every gain on the VA
    CALLN when the frame flag is pending, so a game that re-enables the
    VDP interrupt gets it immediately (as on an MSX).
 
+### Page flipping (Bosconian, 2026-10-20)
+
+Bosconian draws into two name/pattern tables and flips R2, R4 and R6
+every few frames. Each flip used to start a full redraw (768 cells at
+~400 cycles in graphics I, spread over frames): the VRTC handler took up
+to 300 000 cycles, missed VRTCs, and the game ran 213 of 300 frames in
+vaeg. Now:
+
+- `render_flip`: when only the table addresses changed (same mode,
+  backdrop, masks), the patterns and colours whose bytes differ between
+  the old and new tables are flagged and the names are compared with the
+  shadow, so only the cells that look different are drawn.
+- `sprite_step`: a moved sprite pattern table converts only the patterns
+  that differ (`diff8`), not all 256.
+- The cell loop compares a row with `lodsb`/`xlatb` against the shadow
+  and `merged` (pattern or colour pending, by name; built once a pass by
+  `make_merged`), keeps its state in registers, and checks at most
+  SCAN_MAX cells a frame besides MAX_TILES drawn.
+- `make_pairs` runs only when the backdrop changes.
+
+Result in vaeg (VA2 model, Bosconian playing): handler mean 141 000 ->
+71 000 cycles, no VRTC missed, 292 of 300 game frames (was 213).
+
 ### Titles that trap (vaeg, 2026-10-18, frames of play)
 
 | Title (ROM size) | Traps/frame | BIOS calls/frame | Where |
