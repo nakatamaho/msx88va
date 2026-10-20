@@ -128,6 +128,8 @@ def main() -> int:
           f"{len(cbios.PATCHES)} patches applied at run time; SHA-256 {digest}")
     if args.cart:
         for path in args.cart:
+            if dos_name(path) in files:
+                raise SystemExit(f"error: {path}: {dos_name(path)} is taken")
             files[dos_name(path)] = path.read_bytes()
         output = args.output_dir / "private" / "msx88va-carts.d88"
         dosdisk.make_disk(args.msdos4, files, output)

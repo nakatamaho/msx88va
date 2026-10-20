@@ -201,6 +201,11 @@ The address set-up pair (two OUTs to 99h) is the same mechanism.
 - TSP colours above the text/sprite boundary use palette set 1 (0320h):
   both palette sets are written.
 - The trap compares only the low 8 bits of the port (M01, VA2).
+- The Z80's DI is the V30's IF: no VRTC is taken while the Z80 code
+  runs with interrupts disabled. A game polling the frame flag under DI
+  (`DI; IN A,(99h); AND 80h; JR Z`) hung at the C-BIOS screen; the
+  status read now opens the interrupts for one instruction
+  (`vdp_stat_r`, 2026-10-20).
 - vaeg before Rel.20261017 kept a compatible-mode HALT halted; use a
   current vaeg.
 - Keep `vars`/`end_of_program` (the start-up snapshot for the MSX reset)

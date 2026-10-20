@@ -1131,7 +1131,15 @@ vdp_data_r:	mov	byte [vfirst],0
 		pop	ax
 		ret
 
-vdp_stat_r:	mov	byte [vfirst],0
+; The Z80's DI is the V30's IF: a game polling the frame flag with
+; interrupts disabled would never see it set. Open the interrupts here for
+; one instruction, so that a pending VRTC is taken (vrtc, nested).
+vdp_stat_r:	test	byte [vstatus],80h
+		jnz	.read
+		sti
+		nop
+		cli
+.read:		mov	byte [vfirst],0
 		mov	al,[vstatus]
 		and	byte [vstatus],1fh
 		ret
@@ -1730,6 +1738,38 @@ tile_g1:	push	si
 		pop	si
 		ret
 
+; One Graphics II line: DS:SI its colour byte, DS:BX its pattern byte.
+; The colour pair is looked up only when the colour byte differs from the
+; line above's (%1 = 0: the first line); a line without dots is the
+; background word twice.
+%macro G2LINE 1
+		lodsb
+ %if %1
+		cmp	al,[cs:g2_colour]
+		je	%%pair
+ %endif
+		mov	[cs:g2_colour],al
+		xor	ah,ah
+		shl	ax,2
+		mov	bp,ax
+		mov	dx,[cs:pairs + bp]
+		mov	cx,[cs:pairs + bp + 2]
+%%pair:		mov	al,[bx]
+		inc	bx
+		or	al,al
+		jz	%%blank
+		xor	ah,ah
+		shl	ax,2
+		mov	bp,ax
+		LINE
+		jmp	%%next
+%%blank:	mov	ax,cx
+		stosw
+		stosw
+		add	di,STRIDE - 4
+%%next:
+%endmacro
+
 ; AX: third * 256 + name.
 tile_g2:	push	si
 		push	di
@@ -1740,21 +1780,9 @@ tile_g2:	push	si
 		mov	bx,ax
 		and	bx,[cs:r_pmask]
 		add	bx,[cs:r_pat]
-%rep 8
-		lodsb				; the line's colours
-		xor	ah,ah
-		shl	ax,2
-		push	bx
-		mov	bx,ax
-		mov	dx,[cs:pairs + bx]
-		mov	cx,[cs:pairs + bx + 2]
-		pop	bx
-		mov	al,[bx]
-		inc	bx
-		xor	ah,ah
-		shl	ax,2
-		mov	bp,ax
-		LINE
+		G2LINE	0
+%rep 7
+		G2LINE	1
 %endrep
 		pop	di
 		pop	si
@@ -2722,6 +2750,7 @@ spr_ys		db	1
 spr_is		db	5
 any_pend	db	0
 backdrop	db	0
+g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0
 opn_io		db	0
 ppi_a		db	0
