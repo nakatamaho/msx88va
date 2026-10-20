@@ -37,6 +37,12 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
   before every commit. The test games are freeware of the MSXdev contest,
   fetched by the user with `tools/get_games.py` (official ZIPs, SHA-256);
   they are not ours to redistribute.
+- **Commercial ROMs: never commit.** The maintainer's commercial MSX
+  cartridges (Namcot and Hudson titles, 1984-1986, as ZIPs) are in
+  `~/work/pc88va/pc88va-private-docs/msxroms/`. Never copy them, or any
+  ROM, disk image, dump or screenshot derived from them, into the
+  repository or a distributed disk; never paste their bytes into commits,
+  documents or issues. Use them only through `build/private/`.
 - **C-BIOS compatibility.** A routine done natively must leave the Z80
   registers and flags as the C-BIOS routine does (games compute their
   next call from them; see DESIGN "M04").
@@ -55,6 +61,10 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
     python3 -I tools/build_dos.py                  # build/dist/msx88va.d88
     python3 -I tools/build_dos.py --cart GAME.rom  # + build/private/msx88va-carts.d88
     python3 -I build/dist/get_games.py build/dist/msx88va.d88  # MSXdev games
+    # the private test disk: the commercial ROMs and the MSXdev games
+    python3 -I tools/build_dos.py --cart ~/work/pc88va/pc88va-private-docs/msxroms
+    python3 -I tools/get_games.py build/private/msx88va-carts.d88 \
+      -o build/private/msx88va-all.d88 --zips build/private/msxdev-zips
     python3 -I tools/build_m01.py                  # build/dist/m01test.d88
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 
