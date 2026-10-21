@@ -5,3 +5,5 @@
 *.d88
 build/
 __pycache__/
+*.HEIC
+*.heic

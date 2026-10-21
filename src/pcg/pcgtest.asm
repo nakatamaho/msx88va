@@ -887,6 +887,9 @@ graphics_init:	mov	ax,1702h		; clear the text screen
 		shl	dx,12
 		or	bx,dx
 		mov	[gvram_seg],bx
+		mov	dx,0153h		; again: the graphics BIOS set GMSP
+		in	al,dx			; (single-plane writes), which the
+		mov	[old_153],al		; windows below must keep
 		call	gvram_on
 		mov	dx,0580h		; single-plane write mode: CPU data
 		mov	al,10h

@@ -214,7 +214,17 @@ GVRAM tiles, so a cell costs one TVRAM word instead of ~400 cycles.
 - vaeg, 2026-10-21: the patterns show, 40-column doubling and raster
   offset as expected, the read-back matches the layout above (status 01),
   ANKM = 1 shows only rows 0-7 of a 16-raster character, the restore
-  leaves the gaiji RAM as it was. Hardware: pending (VA, VA2).
+  leaves the gaiji RAM as it was.
+- PC-88VA and PC-88VA2, 2026-10-21 (photographs, disk SHA-256 06ebbe03...):
+  both 15 kHz, 200 rasters (status 07: 8 rasters a line); the 256
+  patterns show in 40-column mode with their colours, the opaque
+  backgrounds and the sprites above; the read-back is vaeg's layout
+  (status 01); direct byte writes to the gaiji RAM show at once (the row
+  6 dots); 80 columns show each half twice. The GVRAM squares behind were
+  garbage: PCGTEST wrote back port 153h as read before the graphics BIOS
+  set GMSP (single-plane writes), so its GVRAM writes were multiplane;
+  fixed (153h read again after the graphics set-up), to be checked again
+  with the alignment against the squares.
 
 
 
