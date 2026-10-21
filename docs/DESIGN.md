@@ -223,8 +223,21 @@ GVRAM tiles, so a cell costs one TVRAM word instead of ~400 cycles.
   6 dots); 80 columns show each half twice. The GVRAM squares behind were
   garbage: PCGTEST wrote back port 153h as read before the graphics BIOS
   set GMSP (single-plane writes), so its GVRAM writes were multiplane;
-  fixed (153h read again after the graphics set-up), to be checked again
-  with the alignment against the squares.
+  fixed (153h read again after the graphics set-up).
+- PC-88VA and PC-88VA2, 2026-10-21, disk SHA-256 b542573e...: the GVRAM
+  squares show, and the cells sit exactly on them (a cell in the colour
+  of the square under it disappears whole) with raster offset 4: MSX line
+  0 on graphics line 4 as in msx88va. The probe passes on both.
+- Screen modes of the 18 test titles in vaeg (DUMP_VRAM, R0/R1 at the
+  title and three times in play):
+
+  | Mode in play | Titles |
+  |---|---|
+  | Graphics I | Bosconian, Dig Dug, King & Balloon, Pac-Man, Rally-X, Binary Battle, Shift, U-boat Killer; Mappy (title only: play not reached in vaeg) |
+  | Graphics II | Galaga (Graphics I title), Galaxian, Star Force, Star Soldier, Mix, The Drop of Abu-Cymbel, GS Soccer, Zxetris, Terminal Run |
+
+  So the gaiji cells would serve half of them, Bosconian among them; the
+  Graphics II titles keep the GVRAM renderer.
 
 
 
