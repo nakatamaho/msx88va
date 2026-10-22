@@ -56,10 +56,10 @@ CART_SEG	equ	BASE + 1200h	; cartridge, up to 32 KiB
 Z80SEG		equ	BASE + 2200h	; what the Z80 sees
 RAMSEG		equ	BASE + 3200h	; slot 3: 64 KiB RAM
 VRAMSEG		equ	BASE + 4200h	; 16 KiB VRAM
-EMPTYSEG	equ	BASE + 4600h	; 16 KiB of FFh: an empty page
-STACKSEG	equ	BASE + 4a00h	; 8 KiB native stack
+CACHESEG	equ	BASE + 4600h	; 24 KiB: Graphics II cell images
+STACKSEG	equ	BASE + 4c00h	; 8 KiB native stack
 STACK_TOP	equ	2000h
-SNAPSEG		equ	BASE + 4c00h	; the variables as at the first start
+SNAPSEG		equ	BASE + 4e00h	; the variables as at the first start
 SNAP_BYTES	equ	400h
 MEMORY_TOP	equ	SNAPSEG + SNAP_BYTES / 16	; paragraphs used, for MSX.COM
 
@@ -226,12 +226,6 @@ memory_init:	push	es
 		mov	es,ax
 		xor	di,di
 		xor	ax,ax
-		mov	cx,2000h
-		rep	stosw
-		mov	ax,EMPTYSEG
-		mov	es,ax
-		xor	di,di
-		mov	ax,0ffffh
 		mov	cx,2000h
 		rep	stosw
 		mov	ax,Z80SEG
@@ -1831,7 +1825,15 @@ ppi_a_w:	push	cx
 .load:		call	page_seg		; slot AL's page BX
 		or	ax,ax
 		jnz	.copy
-		mov	ax,EMPTYSEG
+		mov	di,bx			; empty: FFh
+		mov	cl,14
+		shl	di,cl
+		mov	ax,Z80SEG
+		mov	es,ax
+		mov	ax,0ffffh
+		mov	cx,2000h
+		rep	stosw
+		jmp	.switched
 .copy:		push	ds
 		mov	ds,ax
 		mov	di,bx
@@ -1843,7 +1845,7 @@ ppi_a_w:	push	cx
 		mov	cx,2000h
 		rep	movsw
 		pop	ds
-		inc	word [switches]
+.switched:	inc	word [switches]
 .next:		shr	dl,2
 		inc	bx
 		cmp	bx,4
@@ -1880,7 +1882,7 @@ render_step:	cmp	byte [pass_on],0
 		cmp	byte [vwrite],0
 		je	.ret
 .start:		call	pass_start
-.go:		mov	word [budget],MAX_TILES
+.go:		mov	word [budget],MAX_TILES * 2	; half cells: a cell from the
 		cmp	word [render_fn],loop_pcg
 		je	.text
 		jmp	[render_fn]
@@ -2034,12 +2036,21 @@ make_merged:	push	bp
 		and	bx,bp
 		or	al,[col_pend + bx]
 		mov	[merged + si],al
-		inc	si
+		or	al,al			; the cached image is stale
+		jz	.g2_n
+		mov	byte [g2_ok + si],0
+.g2_n:		inc	si
 		cmp	si,768
 		jb	.g2_l
 		jmp	.ret
 .fill:		rep	stosw
-		cmp	word [render_fn],loop_pcg	; the gaiji cells' colour
+		or	ax,ax			; a full redraw: no cached image
+		jz	.cache_kept
+		mov	di,g2_ok
+		mov	cx,768 / 2
+		xor	ax,ax
+		rep	stosw
+.cache_kept:	cmp	word [render_fn],loop_pcg	; the gaiji cells' colour
 		jne	.ret			; shadow
 		push	ds
 		mov	si,[r_col]
@@ -2410,8 +2421,8 @@ loop_blank:	mov	byte [pass_on],0
 		pop	bx
 		pop	dx
 		pop	cx
-		dec	word [cs:budget]
-		jz	%%full
+		sub	word [cs:budget],2	; Graphics II cache costs half
+		jle	%%full
 		loop	%%c
 		sub	si,[cs:r_name]		; the row done
 		mov	dl,0
@@ -2507,18 +2518,38 @@ tile_g1:	push	si
 		xor	ah,ah
 		shl	ax,2
 		mov	bp,ax
-		LINE
+		mov	ax,[cs:expand + bp]
+		and	ax,dx
+		xor	ax,cx
+		stosw
+		mov	ax,[cs:expand + bp + 2]
+		and	ax,dx
+		xor	ax,cx
+		stosw
 		jmp	%%next
 %%blank:	mov	ax,cx
 		stosw
 		stosw
-		add	di,STRIDE - 4
 %%next:
 %endmacro
 
-; AX: third * 256 + name.
+; AX: third * 256 + name. The cell's image comes from CACHESEG (32 bytes
+; at AX * 32, lines 4 bytes apart), made there first when g2_ok[AX] is 0
+; (make_merged clears it when the cell's pattern or colour changed, every
+; one on a full redraw); a cell from the cache gives half its budget back.
 tile_g2:	push	si
 		push	di
+		push	ax
+		mov	bx,ax
+		cmp	byte [cs:g2_ok + bx],0
+		jne	.cached
+		mov	byte [cs:g2_ok + bx],1
+		push	es
+		push	di
+		mov	di,ax
+		shl	di,5
+		mov	bx,CACHESEG
+		mov	es,bx
 		shl	ax,3
 		mov	si,ax
 		and	si,[cs:r_cmask]
@@ -2530,6 +2561,21 @@ tile_g2:	push	si
 %rep 7
 		G2LINE	1
 %endrep
+		pop	di
+		pop	es
+		jmp	.copy
+.cached:	inc	word [cs:budget]
+.copy:		pop	si
+		shl	si,5
+		push	ds
+		mov	ax,CACHESEG
+		mov	ds,ax
+%rep 8
+		movsw
+		movsw
+		add	di,STRIDE - 4
+%endrep
+		pop	ds
 		pop	di
 		pop	si
 		ret
@@ -4336,6 +4382,7 @@ col_pend	times	768 db 0
 row_pend	times	24 db 0
 shadow		times	960 db 0
 merged		times	768 db 0
+g2_ok		times	768 db 0		; tile_g2: CACHESEG image valid
 scan		dw	0
 spt_dirty	times	256 db 0
 f_y		times	32 dw 0

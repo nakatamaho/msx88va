@@ -59,8 +59,10 @@ VA2):
   MS-DOS with BASE 3000h, see "Disks"): code BASE (24 KiB since M05),
   C-BIOS main ROM BASE+600h, logo ROM +E00h, cartridge +1200h (slot 1
   from page 1), the Z80's 64 KiB +2200h, slot-3 RAM +3200h, VRAM +4200h,
-  an FFh page +4600h, native stack +4A00h (8 KiB), the variables' start-up
-  copy +4C00h (1 KiB), up to +4C40h = 7C40h: below 8000h, the top of the
+  the Graphics II cell images +4600h (24 KiB; until then an FFh page of
+  16 KiB, now an empty page is filled with FFh when selected), native
+  stack +4C00h (8 KiB), the variables' start-up copy +4E00h (1 KiB), up
+  to +4E40h = 7E40h: below 8000h, the top of the
   PC-88VA's standard 512 KiB (vaeg's DOS reports A000h). Only the
   variables from `vars` to `vars_end` are copied for an MSX reset; the
   work areas after them (flags, shadow, colour pairs) are zeroed
@@ -238,7 +240,19 @@ untested.
   a time; the game rewrites about 540 names over a few frames, patterns
   and colours stay. At MAX_TILES = 64 cells a frame the picture takes
   about nine frames to follow a step (vaeg: render_step 26 000 cycles a
-  frame on the VA model). Not addressed yet.
+  frame on the VA model).
+- Graphics II cell images (`tile_g2`): the image of a (third, name) pair
+  is made once into CACHESEG (32 bytes, 768 entries) and copied to GVRAM
+  from there (8 x 2 MOVSW); `g2_ok` marks the valid ones, cleared by
+  `make_merged` where the pattern or colour of the pair is pending and
+  wholly on a full redraw (which a backdrop change also is). A copied cell
+  costs half a cell of the frame's budget (MAX_TILES * 2 halves). Star
+  Force in vaeg (VA model, play): render_step 26 300 -> 12 400 cycles a
+  frame (max 56 400 -> 47 600), passes completed 0.29 -> 0.50 a frame;
+  GVRAM against the picture computed from a VRAM dump, 24 frames of the
+  scroll: exact whenever no pass was under way (the others differ only in
+  the cells the pass had not reached). The 18 titles look as before with
+  both BIOSes.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
