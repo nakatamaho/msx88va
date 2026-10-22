@@ -253,6 +253,18 @@ untested.
   scroll: exact whenever no pass was under way (the others differ only in
   the cells the pass had not reached). The 18 titles look as before with
   both BIOSes.
+- Sprite flags with many sprites: with five or more, `collide_j` asked
+  `rank_j` for every row of every pair how many earlier sprites cover the
+  row (each a call of `sprite_rows`): cubic in the sprites. Star Force
+  firing (vaeg, VA model; `--define TEST_FIRE` presses SPACE and trigger
+  A four frames in eight) took up to 284 000 cycles in `sprite_flags`
+  (82 000 on average), two VRTCs missed: the game at a third of its
+  speed. Now `flags_compute` takes the sprites in order and adds each
+  one's rows to `f_cnt[row]` after testing it, so the rank is a table
+  look-up: at most 71 000, about 10 000-25 000 on average, no VRTC missed.
+  Checked against the TMS9918's rules computed from VRAM dumps (DUMP_VRAM
+  now also stores f_hit and f_five at GVRAM C00Ah): 115 frames of four
+  titles, 65 with five or more sprites, 34 with a collision, all equal.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

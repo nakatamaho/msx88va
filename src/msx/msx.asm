@@ -444,6 +444,10 @@ dump_vram:	push	ds
 		rep	movsw
 		mov	ax,[log_n]
 		stosw
+		mov	al,[f_hit]		; C00Ah: the sprite flags computed
+		stosb
+		mov	al,[f_five]
+		stosb
 		ret
 
 log_n		dw	0
@@ -1759,7 +1763,15 @@ kbd_scan:	push	es
 		not	ch
 		and	[msx_keys + bx],ch
 		jmp	.map
-.done:		pop	es
+.done:
+%ifdef TEST_FIRE				; vaeg tests: SPACE and trigger A
+		test	byte [frames],4		; pressed 4 frames in 8
+		jz	.fire
+		and	byte [msx_keys + 8],0feh
+		and	byte [msx_keys + 11],0efh
+.fire:
+%endif
+		pop	es
 		ret
 
 ppi_c_r:	mov	al,[ppi_c]
@@ -3413,15 +3425,27 @@ flags_compute:	push	es
 		cmp	byte [f_n],5		; five or more: the fifth sprite
 		jb	.pairs
 		call	fifth_sprite
-.pairs:		mov	byte [f_j],1		; each sprite against the earlier
+.pairs:		mov	di,f_cnt		; f_cnt[row]: the sprites before
+		mov	cx,192 / 2		; f_j covering the row
+		xor	ax,ax
+		rep	stosw
+		mov	byte [f_j],0		; each sprite against the earlier
 .jl:		mov	al,[f_j]		; ones, to the first collision
 		cmp	al,[f_n]
 		jae	.done
 		call	sprite_rows
 		jge	.jnext
+		cmp	byte [f_j],0
+		je	.count
 		call	collide_j
 		cmp	byte [f_hit],0
 		jne	.done
+.count:		mov	si,[f_r0]		; then f_j's rows counted
+		mov	cx,[f_r1]
+		sub	cx,si
+.c:		inc	byte [f_cnt + si]
+		inc	si
+		loop	.c
 .jnext:		inc	byte [f_j]
 		jmp	.jl
 .done:		pop	es
@@ -3504,31 +3528,6 @@ fifth_sprite:	mov	di,f_diff
 		jb	.s
 		ret
 
-; AL = the number of sprites before f_j covering row SI. Keeps SI.
-rank_j:		push	cx
-		xor	cx,cx
-		xor	bx,bx
-.k:		cmp	bl,[f_j]
-		jae	.done
-		push	bx
-		mov	al,bl
-		push	word [f_r0]
-		push	word [f_r1]
-		call	sprite_rows
-		cmp	si,[f_r0]
-		jl	.no
-		cmp	si,[f_r1]
-		jge	.no
-		inc	cx
-.no:		pop	word [f_r1]
-		pop	word [f_r0]
-		pop	bx
-		inc	bl
-		jmp	.k
-.done:		mov	al,cl
-		pop	cx
-		ret
-
 ; Sprite f_j against sprites 0 .. f_j - 1 on rows f_r0 .. f_r1 - 1; sets
 ; f_hit. DS = CS.
 collide_j:	mov	byte [f_i],0
@@ -3562,12 +3561,9 @@ collide_j:	mov	byte [f_i],0
 		jge	.inext
 		mov	si,ax
 		mov	[f_rend],dx
-.row:		cmp	byte [f_n],5		; with five or more, J must be one
-		jb	.shown			; of the first four on the line
-		call	rank_j
-		cmp	al,4
-		jae	.rnext
-.shown:		call	collide_row
+.row:		cmp	byte [f_cnt + si],4	; J must be one of the first four
+		jae	.rnext			; on the line
+		call	collide_row
 		cmp	byte [f_hit],0
 		jne	.ret
 .rnext:		inc	si
@@ -4396,6 +4392,7 @@ f_xi		dw	0
 f_pat		times	32 db 0
 f_num		times	32 db 0
 f_diff		times	193 dw 0
+f_cnt		times	192 db 0
 f_n		db	0
 f_last		db	0
 f_hit		db	0
