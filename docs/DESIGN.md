@@ -56,11 +56,17 @@ VA2):
 ## M02: the MSX machine (`src/msx/msx.asm`)
 
 - Memory (paragraphs; M02 had a self-booting disk with BASE 2000h, now
-  MS-DOS with BASE 3000h, see "Disks"): code BASE, C-BIOS main ROM
-  BASE+400h, logo ROM +C00h, cartridge +1000h (slot 1 from page 1), the
-  Z80's 64 KiB +2000h, slot-3 RAM +3000h, VRAM +4000h, an FFh page
-  +4400h, native stack +4800h (8 KiB), the variables' start-up copy
-  +4A00h, up to +4C00h.
+  MS-DOS with BASE 3000h, see "Disks"): code BASE (24 KiB since M05),
+  C-BIOS main ROM BASE+600h, logo ROM +E00h, cartridge +1200h (slot 1
+  from page 1), the Z80's 64 KiB +2200h, slot-3 RAM +3200h, VRAM +4200h,
+  an FFh page +4600h, native stack +4A00h (8 KiB), the variables' start-up
+  copy +4C00h (1 KiB), up to +4C40h = 7C40h: below 8000h, the top of the
+  PC-88VA's standard 512 KiB (vaeg's DOS reports A000h). Only the
+  variables from `vars` to `vars_end` are copied for an MSX reset; the
+  work areas after them (flags, shadow, colour pairs) are zeroed
+  (`zero_init`), the constant tables sit before `vars`. (Until M05 the
+  copy, 8.7 KiB, overran its 8 KiB by 0.5 KiB, harmless only because DOS
+  had the memory free.)
 - Slots: an A8h write copies each changed page into the Z80 segment (16
   KiB), after copying a RAM page back to its store. C-BIOS's CHKRAM search
   is patched out (with copied pages every slot looks writable): slot 3 in
@@ -239,6 +245,74 @@ GVRAM tiles, so a cell costs one TVRAM word instead of ~400 cycles.
   So the gaiji cells would serve half of them, Bosconian among them; the
   Graphics II titles keep the GVRAM renderer.
 
+### In the MSX program (`src/msx/msx.asm`, `src/dos/msxcom.asm`)
+
+- MSX.COM saves the gaiji area to GAIJI.BAK before it starts the program
+  (kept when it exists: the copy from before the first run stays) and
+  then sets `pcg_ok` in the program's header; when GAIJI.BAK cannot be
+  written (a protected disk) it says so and the program draws Graphics I
+  in GVRAM as before. `MSX /N` does not touch the gaiji RAM; `MSX /R`
+  writes GAIJI.BAK back, deletes it and returns to DOS (the program itself
+  never returns, and AUTOEXEC.BAT runs MSX: `.` or ESC in the menu returns
+  to DOS for it; vaeg's headless input does not reach DOS's AH = 08h with
+  ESC, its debug script's `input-line .` does). The probe's layout and split screen are used as they
+  are: TVRAM frame 6000h (27 rows of 80 columns), split screen 0, MSX row
+  r on frame row r + 1 at column 8 + 2 * column, raster offset half a
+  line, DSPDEF with 8 or 16 rasters a line (from the BIOS's split screen
+  heights), port 30h = 0 (40 columns), port 148h = 03h.
+- `render_setup` picks `loop_pcg` for Graphics I when `pcg_ok` was set.
+  The GVRAM picture is then the backdrop; a cell is its code (table
+  `pcg_code`) in two columns and its attribute: foreground colour 0 is
+  replaced by the backdrop, background 0 is the TSP's transparent colour,
+  which shows the backdrop. Leaving Graphics I blanks the frame (codes
+  and attributes; an attribute left behind is an opaque background over
+  the next mode's picture), and so does an MSX reset.
+- Patterns: a pattern written changes its glyph only (`pcg_glyphs`, at
+  the pass start, the flags found by REPE SCASB; 8 byte writes, 16 on a
+  400-raster screen); every glyph again only on entering the mode or a
+  move of the pattern table, not on a backdrop change. Colours: a shadow
+  of the 32 colour bytes, so a colour group counts only when its byte
+  changed (Bosconian rewrites its colour table with the same values).
+  Cells: the whole pass in one call, no budget; after a table flip with
+  no colour change the names are compared with the shadow by REPE CMPSW
+  and only the cells that differ are drawn (`pcg_cell`, ~150 cycles);
+  otherwise the cell loop's rules (rows without a written name skipped).
+- A table flip (`render_flip`) must make every row checked: the GVRAM path
+  did so through `any_pend`, set for pattern flags too; the PCG path
+  rebuilds `any_pend` from the colours, which left rows unchecked after a
+  name table flip (Rally-X showed two stale rows) until `flipped` was
+  added.
+- For both paths: `diff8` compares a whole table with REPE CMPSW, a table
+  compared with itself is skipped, and a pass start copies only the rows'
+  flags when no pattern or colour flag is set (and in Graphics I only the
+  first 256 pattern and 32 colour flags).
+- vaeg, 2026-10-22, VA2, 24 kHz (16 rasters a line) and 15 kHz
+  (`--cfg` with `Monitor15kHz=true`; 8 rasters, the hardware's case): the
+  18 titles look as before; the cells match the picture drawn from a VRAM
+  dump (Bosconian, Dig Dug, Pac-Man, Rally-X); C-BIOS and an MSX BIOS;
+  an MSX reset (TEST_RESET) blanks and redraws; `/N` draws in GVRAM; with
+  vaeg's backup RAM file (`--bkupmem`) a run of the 18-title disk with
+  Bosconian, then a second run with `.` in the menu and `MSX /R`, leave
+  B0820h-B1FBFh exactly as before and GAIJI.BAK deleted (the boot ROM itself rewrites
+  B0800h-B081Fh and memory switches 1FC6h, 1FC7h, 1FCDh at every start).
+  The text looks brighter than GVRAM in vaeg's screenshots, which draw a
+  200-line graphics screen with dark scan lines.
+- VRTC handler, vaeg VA2, 40 frames of play, cycles (frame 141 560):
+
+  | Title | Before (mean / max) | Gaiji cells (mean / max) |
+  |---|---|---|
+  | Bosconian | 40 800 / 84 600 | 31 500 / 81 800 |
+  | Dig Dug | 37 000 / 40 800 | 33 300 / 34 900 |
+  | Rally-X | 54 300 / 82 400 | 29 900 / 74 400 |
+
+  The rendering itself: Bosconian 19 200 -> 11 300, Dig Dug 9 300 ->
+  5 600, Rally-X 42 300 -> 17 600 (mean). A first version that kept the
+  cell loop with a 768-cell budget and rewrote all glyphs on every full
+  redraw was slower than GVRAM (Bosconian up to 147 000, a VRTC missed).
+  The remaining peaks are a table flip (diff8 and flags, ~27 000) in the
+  same frame as a sprite pattern table move (34 500). Hardware: pending.
+
+## Disks (MS-DOS 4.0)
 
 
 - Every disk is msdos4-va.2 (`msdos4-pc88va-2hd.d88`, MIT licence) with

@@ -34,8 +34,10 @@
 ; VDP) and A0h-ABh (PSG, PPI); C-BIOS's VDP, PSG and keyboard routines call native
 ; code directly (CALLN, tools/cbios.py). The VRTC interrupt reads the VA
 ; keyboard into the MSX key matrix, sets the VDP's frame flag, redraws the
-; changed cells of the picture from the emulated VRAM, and injects the
-; Z80's mode 1 interrupt while the VDP's interrupt line is active.
+; changed cells of the picture from the emulated VRAM (Graphics I as gaiji
+; characters on the TSP's text screen when MSX.COM saved the gaiji RAM),
+; and injects the Z80's mode 1 interrupt while the VDP's interrupt line is
+; active.
 ;
 ; HELP (VA keyboard) resets the MSX.
 
@@ -46,18 +48,19 @@
 BASE		equ	3000h		; where MSX.COM puts this program
 %endif
 
-CODE_BYTES	equ	4000h		; this program, padded
-MAIN_SEG	equ	BASE + 0400h	; C-BIOS main ROM, 32 KiB
-LOGO_SEG	equ	BASE + 0c00h	; C-BIOS logo ROM, 16 KiB
-CART_SEG	equ	BASE + 1000h	; cartridge, up to 32 KiB
-Z80SEG		equ	BASE + 2000h	; what the Z80 sees
-RAMSEG		equ	BASE + 3000h	; slot 3: 64 KiB RAM
-VRAMSEG		equ	BASE + 4000h	; 16 KiB VRAM
-EMPTYSEG	equ	BASE + 4400h	; 16 KiB of FFh: an empty page
-STACKSEG	equ	BASE + 4800h	; 8 KiB native stack
+CODE_BYTES	equ	6000h		; this program, padded
+MAIN_SEG	equ	BASE + 0600h	; C-BIOS main ROM, 32 KiB
+LOGO_SEG	equ	BASE + 0e00h	; C-BIOS logo ROM, 16 KiB
+CART_SEG	equ	BASE + 1200h	; cartridge, up to 32 KiB
+Z80SEG		equ	BASE + 2200h	; what the Z80 sees
+RAMSEG		equ	BASE + 3200h	; slot 3: 64 KiB RAM
+VRAMSEG		equ	BASE + 4200h	; 16 KiB VRAM
+EMPTYSEG	equ	BASE + 4600h	; 16 KiB of FFh: an empty page
+STACKSEG	equ	BASE + 4a00h	; 8 KiB native stack
 STACK_TOP	equ	2000h
-SNAPSEG		equ	BASE + 4a00h	; the variables as at the first start
-MEMORY_TOP	equ	SNAPSEG + 200h	; paragraphs used, for MSX.COM
+SNAPSEG		equ	BASE + 4c00h	; the variables as at the first start
+SNAP_BYTES	equ	400h
+MEMORY_TOP	equ	SNAPSEG + SNAP_BYTES / 16	; paragraphs used, for MSX.COM
 
 BRKEM_VEC	equ	70h		; 40h-7Bh unused (technical manual, vector map)
 CALLN_VEC	equ	71h		; C-BIOS routines done natively (tools/cbios.py)
@@ -76,6 +79,11 @@ STRIDE		equ	160		; bytes per 320-dot line
 MAX_TILES	equ	64		; cells drawn per VRTC at most
 SCAN_MAX	equ	384		; cells checked per VRTC at most
 
+TFRAME		equ	6000h		; TVRAM: the text frame of the gaiji cells
+TFRAME_VW	equ	160		; bytes a row (80 columns)
+TFRAME_ROWS	equ	27
+TTABLE		equ	7f00h		; TVRAM: the text screen control tables
+
 %macro BRKEM 1
 		db	0fh, 0ffh, %1
 %endmacro
@@ -87,6 +95,8 @@ header		db	'MSX88VA', 0		; checked by MSX.COM
 cart_pages	db	0			; set by MSX.COM: 0, 1 or 2
 ram_slot	db	3			; set by MSX.COM: 3, or 0 (an MSX
 						; BIOS: RAM in slot 0 pages 2-3)
+pcg_ok		db	0			; set by MSX.COM: 1 when GAIJI.BAK
+						; holds the gaiji RAM
 
 start:		cli
 		mov	ax,cs
@@ -115,12 +125,14 @@ start:		cli
 		mov	es,ax
 		mov	si,vars
 		xor	di,di
-		mov	cx,(end_of_program - vars) / 2
+		mov	cx,(vars_end - vars) / 2
 		rep	movsw
 		pop	es
 		sti
+		call	zero_init
 		call	screen_init
 		jc	fail
+		call	pcg_init
 		call	memory_init
 		call	sound_init
 		call	install
@@ -230,6 +242,17 @@ memory_init:	push	es
 		xor	ax,ax
 		mov	cx,8000h
 		rep	stosw
+		ret
+
+; The work areas after vars_end: zero.
+zero_init:	push	es
+		push	cs
+		pop	es
+		mov	di,vars_end
+		mov	cx,(end_of_program - vars_end) / 2
+		xor	ax,ax
+		rep	stosw
+		pop	es
 		ret
 
 install:	cli
@@ -371,11 +394,13 @@ restart:	push	bp
 		pop	es
 		xor	si,si
 		mov	di,vars
-		mov	cx,(end_of_program - vars) / 2
+		mov	cx,(vars_end - vars) / 2
 		rep	movsw
 		push	cs
 		pop	ds
 		pop	es
+		call	zero_init
+		call	pcg_blank
 		pop	ax
 		mov	[gvram_seg],ax
 		mov	es,ax			; the picture blank
@@ -1480,7 +1505,19 @@ render_step:	cmp	byte [pass_on],0
 		je	.ret
 .start:		call	pass_start
 .go:		mov	word [budget],MAX_TILES
+		cmp	word [render_fn],loop_pcg
+		je	.text
 		jmp	[render_fn]
+.text:		mov	dx,0153h		; the gaiji cells: TVRAM at A0000h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,01h
+		out	dx,al
+		call	loop_pcg
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
 .ret:		ret
 
 pass_start:	mov	byte [vwrite],0
@@ -1488,20 +1525,35 @@ pass_start:	mov	byte [vwrite],0
 		je	.pend
 		mov	byte [vregchg],0
 		call	render_flip
-.pend:		push	es			; pending <- written, written <- 0
-		push	cs
-		pop	es
+.pend:		push	es			; pending <- written, written <- 0:
+		push	cs			; the rows; the patterns and colours
+		pop	es			; when a flag is set in either (the
+		mov	al,[any_dirty]		; first 256 and 32 but in graphics
+		or	al,[pend_set]		; II)
+		jz	.rows
+		cmp	word [render_fn],loop_g2
+		je	.all
 		mov	si,pat_dirty
 		mov	di,pat_pend
-		mov	cx,FLAG_BYTES / 2
-		rep	movsw
-		mov	di,pat_dirty
-		xor	ax,ax
-		mov	cx,FLAG_BYTES / 2
-		rep	stosw
+		mov	cx,256 / 2
+		call	.move
+		mov	si,col_dirty
+		mov	di,col_pend
+		mov	cx,32 / 2
+		call	.move
+		jmp	.rows
+.all:		mov	si,pat_dirty
+		mov	di,pat_pend
+		mov	cx,768 * 2 / 2
+		call	.move
+.rows:		mov	si,row_dirty
+		mov	di,row_pend
+		mov	cx,24 / 2
+		call	.move
 		pop	es
 		mov	al,[any_dirty]
 		mov	[any_pend],al
+		mov	[pend_set],al
 		mov	byte [any_dirty],0
 		xor	ax,ax
 		mov	[rpos],ax
@@ -1511,12 +1563,24 @@ pass_start:	mov	byte [vwrite],0
 		mov	[rdest],ax
 		mov	byte [pass_on],1
 		call	make_merged
-		cmp	byte [rfull],0
+		mov	byte [flipped],0
+		cmp	word [render_fn],loop_pcg
+		jne	.cleared
+		call	pcg_glyphs
+.cleared:	cmp	byte [rfull],0
 		je	.ret
 		cmp	byte [r_clear],0
 		je	.ret
 		call	clear_picture
 .ret:		ret
+.move:		push	si			; CX words SI -> DI, SI zeroed
+		push	cx
+		rep	movsw
+		pop	cx
+		pop	di
+		xor	ax,ax
+		rep	stosw
+		ret
 
 ; merged[i]: 1 when a cell of name i (graphics II: third * 256 + name)
 ; must be drawn whatever was drawn there: its pattern or colour pending,
@@ -1536,12 +1600,41 @@ make_merged:	push	bp
 		mov	ax,[render_fn]
 		cmp	ax,loop_g2
 		je	.g2
+		cmp	ax,loop_pcg
+		je	.pcg
 		mov	si,pat_pend		; graphics I, text: by name
 		mov	cx,256 / 2
 		rep	movsw
 		cmp	word [render_fn],loop_g1
 		jne	.ret
-		xor	bx,bx			; graphics I: a colour, its eight
+		jmp	.colours
+.pcg:		xor	ax,ax			; the gaiji cells: a pattern is its
+		mov	cx,256 / 2		; glyph (pcg_glyphs), only the
+		rep	stosw			; colours that changed count (a
+		push	ds			; shadow of the 32); rows are
+		mov	si,[r_col]		; skipped when none did and the
+		mov	ax,VRAMSEG		; tables did not move
+		mov	ds,ax
+		xor	bx,bx
+		xor	dl,dl
+.col:		cmp	byte [cs:col_pend + bx],0
+		je	.col_next
+		mov	al,[si + bx]
+		cmp	al,[cs:pcg_colsh + bx]
+		jne	.col_new
+		mov	byte [cs:col_pend + bx],0
+		jmp	.col_next
+.col_new:	mov	[cs:pcg_colsh + bx],al
+		mov	dl,1
+.col_next:	inc	bx
+		cmp	bx,32
+		jb	.col
+		pop	ds
+		mov	[pcg_cols],dl
+		mov	al,dl
+		or	al,[flipped]
+		mov	[any_pend],al
+.colours:	xor	bx,bx			; graphics I: a colour, its eight
 .g1:		cmp	byte [col_pend + bx],0	; names
 		je	.g1_next
 		mov	di,bx
@@ -1570,6 +1663,17 @@ make_merged:	push	bp
 		jb	.g2_l
 		jmp	.ret
 .fill:		rep	stosw
+		cmp	word [render_fn],loop_pcg	; the gaiji cells' colour
+		jne	.ret			; shadow
+		push	ds
+		mov	si,[r_col]
+		mov	ax,VRAMSEG
+		mov	ds,ax
+		mov	di,pcg_colsh
+		mov	cx,32 / 2
+		rep	movsw
+		pop	ds
+		mov	byte [pcg_cols],0
 .ret:		pop	es
 		pop	bp
 		ret
@@ -1625,9 +1729,17 @@ render_flip:	push	es
 		jmp	.flagged
 .bytes:		call	diff1
 .flagged:	mov	byte [any_dirty],1	; every row checked
+		mov	byte [flipped],1
 		ret
 .full:		mov	byte [rfull],1
-		ret
+		mov	ax,[render_fn]		; every glyph again unless the
+		cmp	ax,[old_setup]		; gaiji cells stay on the same
+		jne	.glyphs			; patterns (a backdrop change)
+		mov	ax,[r_pat]
+		cmp	ax,[old_setup + r_pat - render_fn]
+		je	.ret
+.glyphs:	mov	byte [glyphs_all],1
+.ret:		ret
 .same:		push	es
 		push	cs
 		pop	es
@@ -1638,10 +1750,47 @@ render_flip:	push	es
 ; Flags at CS:BX the CX entries of 8 (diff8) or 1 (diff1) bytes that
 ; differ between the VRAM tables at SI (old) and DI (new). Uses AX, BX,
 ; CX, SI, DI.
-diff8:		mov	ax,4			; words an entry
-		jmp	diff
+diff8:		jcxz	.ret			; the whole table at once, past the
+		cmp	si,di			; rest of an entry that differs
+		je	.ret
+		push	ds
+		push	es
+		push	dx
+		mov	dx,VRAMSEG
+		mov	ds,dx
+		mov	es,dx
+		mov	dx,di			; DX: the new table
+		shl	cx,2			; words
+.w:		repe	cmpsw
+		je	.done
+		mov	ax,di
+		sub	ax,dx
+		dec	ax
+		shr	ax,3
+		push	bx
+		add	bx,ax
+		mov	byte [cs:bx],1
+		pop	bx
+		mov	ax,di
+		sub	ax,dx
+		and	ax,7
+		jz	.more
+		neg	ax
+		add	ax,8
+		add	si,ax
+		add	di,ax
+		shr	ax,1
+		sub	cx,ax
+.more:		jcxz	.done
+		jmp	.w
+.done:		pop	dx
+		pop	es
+		pop	ds
+.ret:		ret
 diff1:		mov	ax,0
 diff:		jcxz	.ret
+		cmp	si,di			; the same table
+		je	.ret
 		push	ds
 		push	es
 		push	dx
@@ -1689,7 +1838,16 @@ clear_picture:	mov	es,[gvram_seg]
 
 ; From the registers: the cell loop, the tables and their sizes for
 ; mark_addr, the colour pairs.
-render_setup:	mov	al,[vregs + 7]		; backdrop
+render_setup:	push	word [render_fn]
+		call	.setup
+		pop	ax			; the gaiji cells left: blank
+		cmp	ax,loop_pcg
+		jne	.done
+		cmp	word [render_fn],loop_pcg
+		je	.done
+		call	pcg_blank
+.done:		ret
+.setup:		mov	al,[vregs + 7]		; backdrop
 		and	al,0fh
 		mov	[backdrop],al
 		cmp	al,[pairs_bd]		; the pairs depend on it alone
@@ -1731,7 +1889,11 @@ render_setup:	mov	al,[vregs + 7]		; backdrop
 		mov	word [r_colsize],20h
 		mov	byte [r_colshift],0
 		mov	word [render_fn],loop_g1
-		ret
+		cmp	byte [pcg_on],0
+		je	.g1_ret
+		mov	word [render_fn],loop_pcg	; the gaiji cells, the
+		mov	byte [r_clear],1		; picture in the backdrop
+.g1_ret:	ret
 .g2:		mov	al,[vregs + 4]		; graphics II: base and mask
 		mov	ah,al
 		and	ax,0304h
@@ -2023,6 +2185,417 @@ tile_text:	push	si
 		pop	di
 		pop	si
 		ret
+
+; The gaiji cells: the whole pass in one call, as the cell loop's rules
+; (rows skipped, shadow, merged) but each cell drawn in place: its code in
+; two columns, its attribute (FG low, BG high; colour 0 of the foreground
+; is the backdrop, the background's 0 is the TSP's transparent colour,
+; which shows the picture in the backdrop). After a table moved, with no
+; colour pending, the names are compared with the shadow by REPE CMPSW.
+; TVRAM at A0000h, DS = CS.
+loop_pcg:	mov	al,[rfull]
+		or	al,[pcg_cols]
+		jnz	.slow
+		cmp	byte [any_pend],0
+		je	.slow
+		push	ds
+		push	es
+		push	cs
+		pop	es
+		mov	si,[r_name]
+		mov	di,shadow
+		mov	cx,768 / 2
+		mov	ax,VRAMSEG
+		mov	ds,ax
+.f:		repe	cmpsw
+		je	.f_done
+		mov	ax,[si - 2]		; two names, one or both new
+		lea	bx,[di - 2 - shadow]	; BX: the first's cell
+		cmp	al,[es:di - 2]
+		je	.f_second
+		mov	[es:di - 2],al
+		push	ax
+		call	pcg_cell
+		pop	ax
+.f_second:	inc	bx
+		mov	al,ah
+		cmp	al,[es:di - 1]
+		je	.f_next
+		mov	[es:di - 1],al
+		call	pcg_cell
+.f_next:	jcxz	.f_done
+		jmp	.f
+.f_done:	pop	es
+		pop	ds
+		mov	byte [pass_on],0
+		ret
+.slow:		push	bp
+		push	ds
+		mov	ax,0a000h
+		mov	es,ax
+		mov	di,TFRAME + TFRAME_VW + 16
+		mov	si,[r_name]		; SI: the name's address, BP: the
+		mov	bp,shadow		; shadow at [cs:bp + si]
+		sub	bp,si
+		mov	byte [rrow],0
+		mov	ax,VRAMSEG
+		mov	ds,ax
+.row:		mov	al,[cs:rfull]
+		or	al,[cs:any_pend]
+		jnz	.scan
+		mov	bl,[cs:rrow]
+		xor	bh,bh
+		cmp	byte [cs:row_pend + bx],0
+		jne	.scan
+		add	si,32
+		jmp	.next
+.scan:		push	di
+		mov	cx,32
+		mov	bx,merged
+.c:		lodsb
+		cmp	al,[cs:bp + si - 1]
+		jne	.hit
+		cs	xlatb
+		or	al,al
+		jnz	.hit_again
+		add	di,4
+		loop	.c
+		jmp	.done
+.hit_again:	mov	al,[si - 1]
+.hit:		mov	[cs:bp + si - 1],al	; the shadow
+		xor	ah,ah
+		mov	bx,ax			; the attribute
+		shr	bx,3
+		add	bx,[cs:r_col]
+		mov	dl,[bx]
+		rol	dl,4
+		test	dl,0fh
+		jnz	.fg
+		or	dl,[cs:backdrop]
+.fg:		xor	dh,dh
+		mov	bx,ax			; the code
+		shl	bx,1
+		mov	ax,[cs:pcg_code + bx]
+		stosw
+		stosw
+		mov	[es:di + 8000h - 4],dx
+		mov	[es:di + 8000h - 2],dx
+		mov	bx,merged
+		loop	.c
+.done:		pop	di
+.next:		add	di,TFRAME_VW
+		inc	byte [cs:rrow]
+		cmp	byte [cs:rrow],24
+		jb	.row
+		mov	byte [cs:pass_on],0
+		mov	byte [cs:rfull],0
+		pop	ds
+		pop	bp
+		ret
+
+; Name AL in cell BX (row * 32 + column): its code and attribute, as
+; loop_pcg draws them. DS = VRAMSEG. Keeps every register but AX, DX.
+pcg_cell:	push	bx
+		push	di
+		push	es
+		mov	di,bx			; TVRAM: TFRAME + (row + 1) *
+		and	di,31			; TFRAME_VW + 16 + column * 4
+		shl	di,2
+		shr	bx,5
+		mov	dx,bx
+		shl	bx,7
+		shl	dx,5
+		add	di,bx
+		add	di,dx
+		add	di,TFRAME + TFRAME_VW + 16
+		xor	ah,ah
+		mov	bx,ax
+		shr	bx,3
+		add	bx,[cs:r_col]
+		mov	dl,[bx]
+		rol	dl,4
+		test	dl,0fh
+		jnz	.fg
+		or	dl,[cs:backdrop]
+.fg:		xor	dh,dh
+		mov	bx,ax
+		shl	bx,1
+		mov	ax,[cs:pcg_code + bx]
+		mov	bx,0a000h
+		mov	es,bx
+		stosw
+		stosw
+		mov	[es:di + 8000h - 4],dx
+		mov	[es:di + 8000h - 2],dx
+		pop	es
+		pop	di
+		pop	bx
+		ret
+
+; ---------------------------------------------------------------------------
+; Graphics I on the TSP's text screen (docs/DESIGN.md "M05"): the 256
+; patterns are the 376 half-width characters of the gaiji RAM (B0800h, JIS
+; 7621h-7742h; pattern p is the left (p even) or right half of character
+; p / 2), written there as they change; a cell is one code in two columns
+; of a 40-column screen (the TSP doubles the dots), 8 rasters a line on a
+; 200-raster screen, 16 with each pattern row twice on 400. Split screen 0
+; shows TFRAME, MSX row r on its row r + 1 at column 8 + 2 * column, half a
+; line down (MSX line 0 on graphics line 4). MSX.COM saved the gaiji RAM
+; to GAIJI.BAK; MSX /R puts it back.
+
+; At the start, when MSX.COM set pcg_ok: the tables, the text screen.
+pcg_init:	cmp	byte [pcg_ok],0
+		je	.ret
+		mov	byte [pcg_on],1
+		call	pcg_tables
+		cli
+		mov	dx,0153h		; TVRAM at A0000h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,01h
+		out	dx,al
+		push	es
+		mov	ax,0a000h
+		mov	es,ax
+		xor	ax,ax			; 400 rasters when the BIOS's split
+		mov	si,TTABLE + 14h		; screens are higher than 300
+		mov	cx,4
+.h:		mov	bx,[es:si]
+		and	bx,1feh
+		add	ax,bx
+		add	si,20h
+		loop	.h
+		mov	byte [pcg_h],07h
+		cmp	ax,300
+		jbe	.frame
+		mov	byte [pcg_h],0fh
+.frame:		mov	di,TFRAME		; every column: ANK space
+		mov	cx,TFRAME_ROWS * TFRAME_VW / 2
+		mov	ax,0020h
+		rep	stosw
+		mov	di,TFRAME + 8000h
+		mov	cx,TFRAME_ROWS * TFRAME_VW / 2
+		xor	ax,ax
+		rep	stosw
+		mov	di,TTABLE		; split screen 0
+		mov	word [es:di + 00h],TFRAME	; VSA
+		mov	word [es:di + 02h],0
+		mov	word [es:di + 04h],TFRAME_ROWS	; VH
+		mov	word [es:di + 08h],TFRAME_VW	; VW
+		mov	word [es:di + 0ah],0000h	; attribute mode 0
+		mov	al,[pcg_h]		; raster offset: half a line
+		inc	al
+		shr	al,1
+		mov	ah,al
+		mov	al,0
+		mov	[es:di + 0ch],ax
+		mov	word [es:di + 10h],TFRAME	; RSA
+		mov	al,[pcg_h]		; RH: 25 lines
+		inc	al
+		mov	ah,25
+		mul	ah
+		mov	[es:di + 14h],ax
+		pop	es
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
+		call	dspdef
+		mov	al,00h			; 40 columns
+		out	30h,al
+		mov	al,03h			; ANKM = 0, V3, word mode
+		mov	dx,0148h
+		out	dx,al
+		sti
+.ret:		ret
+
+; pcg_code[p]: the TSP code of pattern p's half character (JIS first byte -
+; 20h, second byte, bit 15 the right half); pcg_addr[p]: its row 0 in the
+; segment B000h (rows 2 bytes apart; vaeg's io/cgromva.c, checked on the
+; PC-88VA and PC-88VA2).
+pcg_tables:	xor	bx,bx
+.p:		mov	ax,bx
+		shr	ax,1			; the character
+		mov	cx,7621h
+		cmp	ax,94
+		jb	.jis
+		mov	cx,7721h - 94
+.jis:		add	cx,ax			; CX: its JIS code
+		mov	al,ch
+		sub	al,20h
+		mov	ah,cl
+		test	bl,1
+		jz	.left
+		or	ah,80h
+.left:		mov	di,bx
+		shl	di,1
+		mov	[pcg_code + di],ax
+		mov	al,cl
+		and	ax,60h
+		shl	ax,6
+		mov	dx,ax
+		mov	al,ch
+		and	ax,1
+		shl	ax,10
+		add	dx,ax
+		mov	al,cl
+		and	ax,1fh
+		shl	ax,5
+		add	dx,ax
+		mov	ax,bx
+		and	ax,1
+		add	dx,ax
+		mov	[pcg_addr + di],dx
+		inc	bx
+		cmp	bx,256
+		jb	.p
+		ret
+
+; The patterns pending (every one after glyphs_all) into the gaiji RAM;
+; the flags searched by REPE SCASB. DS = CS.
+pcg_glyphs:	push	es
+		push	cs
+		pop	es
+		mov	di,pat_pend
+		mov	cx,256
+		xor	al,al
+		cmp	byte [glyphs_all],0
+		jne	.window
+		repe	scasb
+		je	.none
+.window:	mov	dx,0153h		; kanji ROM #2, the backup RAM at
+		in	al,dx			; B0000h (byte access only)
+		push	ax
+		and	al,0f0h
+		or	al,09h
+		out	dx,al
+		push	ds
+		mov	ax,VRAMSEG
+		mov	ds,ax
+		cmp	byte [cs:glyphs_all],0
+		je	.found
+		mov	byte [cs:glyphs_all],0
+		mov	ax,0b000h
+		mov	es,ax
+		xor	bx,bx
+.all:		call	pcg_glyph
+		inc	bx
+		cmp	bx,256
+		jb	.all
+		jmp	.done
+.found:		lea	bx,[di - 1 - pat_pend]	; ES:DI past the flag found
+		push	di
+		mov	ax,0b000h
+		mov	es,ax
+		call	pcg_glyph
+		push	cs
+		pop	es
+		pop	di
+		xor	al,al
+		jcxz	.done
+		repe	scasb
+		jne	.found
+.done:		pop	ds
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
+.none:		pop	es
+		ret
+
+; Pattern BX into its glyph. ES = B000h, DS = VRAMSEG. Uses AL, SI, DI.
+pcg_glyph:	mov	si,bx
+		shl	si,3
+		add	si,[cs:r_pat]
+		push	bx
+		shl	bx,1
+		mov	di,[cs:pcg_addr + bx]
+		pop	bx
+		cmp	byte [cs:pcg_h],07h
+		jne	.double
+%assign r 0
+%rep 8
+		mov	al,[si + r]
+		mov	[es:di + 2 * r],al
+ %assign r r + 1
+%endrep
+		ret
+.double:
+%assign r 0
+%rep 8
+		mov	al,[si + r]
+		mov	[es:di + 4 * r],al
+		mov	[es:di + 4 * r + 2],al
+ %assign r r + 1
+%endrep
+		ret
+
+; The text frame: spaces with the transparent background. Keeps the
+; window. DS = CS.
+pcg_blank:	cmp	byte [pcg_on],0
+		je	.ret
+		push	es
+		mov	dx,0153h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,01h
+		out	dx,al
+		mov	ax,0a000h
+		mov	es,ax
+		mov	di,TFRAME
+		mov	cx,TFRAME_ROWS * TFRAME_VW / 2
+		mov	ax,0020h
+		rep	stosw
+		mov	di,TFRAME + 8000h
+		mov	cx,TFRAME_ROWS * TFRAME_VW / 2
+		xor	ax,ax
+		rep	stosw
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
+		pop	es
+.ret:		ret
+
+; DSPDEF: attributes at +8000h, codes every 2 bytes, pcg_h + 1 rasters a
+; line, the underline on the last raster, blink speed 18h.
+dspdef:		mov	al,14h
+		call	tsp_cmd
+		mov	al,00h
+		call	tsp_par
+		mov	al,80h
+		call	tsp_par
+		mov	al,20h
+		call	tsp_par
+		mov	al,[pcg_h]
+		call	tsp_par
+		call	tsp_par
+		mov	al,18h
+		jmp	tsp_par
+
+tsp_cmd:	push	ax
+		mov	dx,0142h
+.w:		in	al,dx
+		test	al,05h			; IBF, BUSY
+		jnz	.w
+		pop	ax
+		out	dx,al
+		ret
+tsp_par:	push	ax
+		mov	dx,0142h
+.w:		in	al,dx
+		test	al,01h			; IBF
+		jnz	.w
+		pop	ax
+		mov	dx,0146h
+		out	dx,al
+		ret
+
+pcg_on		db	0			; 1: Graphics I on the gaiji cells
+pcg_colsh	times	32 db 0			; the colours drawn
+pcg_h		db	07h			; rasters a text line - 1
+		align	2
+pcg_code	times	256 dw 0
+pcg_addr	times	256 dw 0
 
 ; ---------------------------------------------------------------------------
 ; Sprites, on the TSP's hardware sprites: monochrome mode, the 32
@@ -2760,15 +3333,6 @@ puts:		lodsb
 
 s_fail		db	'Graphics BIOS call failed.', 13, 10, 0
 
-
-; Everything from here on is saved at the first start and restored at an
-; MSX reset.
-		align	2
-vars:
-
-; Block 1 = 90h-99h, block 2 = A0h-ABh (start, end; low byte first).
-trap_ranges	db	90h, 0, 99h, 0, 0a0h, 0, 0abh, 0	; printer, VDP; PSG, PPI
-
 ; VA key (matrix port, bit) -> MSX key (row, bit), as in vaeg's io/serial.c
 ; and the MSX international matrix. Row 11 is joystick port 1.
 %macro K 4				; VA port, bit, MSX row, bit
@@ -2916,6 +3480,32 @@ expand:
  %assign p p + 1
 %endrep
 
+; A byte's dots doubled, MSB first, as two bytes in display order.
+dbl:
+%assign b 0
+%rep 256
+ %assign w 0
+ %assign i 0
+ %rep 8
+  %if b & (1 << i)
+   %assign w w | (3 << (2 * i))
+  %endif
+  %assign i i + 1
+ %endrep
+		db	w >> 8, w & 0ffh
+ %assign b b + 1
+%endrep
+
+
+
+; From here to vars_end saved at the first start and restored at an MSX
+; reset (SNAPSEG).
+		align	2
+vars:
+
+; Block 1 = 90h-99h, block 2 = A0h-ABh (start, end; low byte first).
+trap_ranges	db	90h, 0, 99h, 0, 0a0h, 0, 0abh, 0	; printer, VDP; PSG, PPI
+
 ; Slot s page p -> segment (0: empty). Slot 1 is set from cart_pages.
 slot_seg	dw	MAIN_SEG, MAIN_SEG + 400h, LOGO_SEG, 0
 		dw	0, 0, 0, 0
@@ -2980,12 +3570,22 @@ backdrop	db	0
 old_backdrop	db	0
 pairs_bd	db	0ffh			; the backdrop of pairs
 spr_conv	db	0			; 1: patterns converted in spr_mode
+flipped		db	0			; render_flip moved a table
+glyphs_all	db	1			; pcg_glyphs: every pattern
+pend_set	db	1			; a pattern or colour flag pending
+pcg_cols	db	0			; loop_pcg: a colour pending
 g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0
 opn_io		db	0
 ppi_a		db	0
 ppi_c		db	0
 ed_op		db	0
+f_five		db	0ffh			; FFh: no fifth sprite
+f_dirty		db	1
+		align	2
+vars_end:
+
+; From here on zero at the start and at an MSX reset (zero_init).
 		align	4
 pairs		times	256 * 4 db 0
 ; Written since the pass started: patterns (by number), colours (by
@@ -3016,27 +3616,10 @@ f_diff		times	193 dw 0
 f_n		db	0
 f_last		db	0
 f_hit		db	0
-f_five		db	0ffh			; FFh: no fifth sprite
-f_dirty		db	1
 f_mag		db	0
 f_i		db	0
 f_j		db	0
-; A byte's dots doubled, MSB first, as two bytes in display order.
-dbl:
-%assign b 0
-%rep 256
- %assign w 0
- %assign i 0
- %rep 8
-  %if b & (1 << i)
-   %assign w w | (3 << (2 * i))
-  %endif
-  %assign i i + 1
- %endrep
-		db	w >> 8, w & 0ffh
- %assign b b + 1
-%endrep
-
 		align	2
 end_of_program:
 		times	CODE_BYTES - ($ - $$) db 0	; fails if the program is too large
+		times	-((vars_end - vars) > SNAP_BYTES) db 0	; or the snapshot

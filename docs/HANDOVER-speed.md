@@ -163,6 +163,19 @@ vaeg. Now:
 Result in vaeg (VA2 model, Bosconian playing): handler mean 141 000 ->
 71 000 cycles, no VRTC missed, 292 of 300 game frames (was 213).
 
+### Gaiji cells (M05, 2026-10-22)
+
+Graphics I is drawn as gaiji characters on the TSP's text screen when
+MSX.COM saved the gaiji RAM (DESIGN "M05"): a pattern write rewrites one
+glyph, a cell is four TVRAM words, a pass runs in one call. Handler mean
+in vaeg (VA2): Bosconian 40 800 -> 31 500, Dig Dug 37 000 -> 33 300,
+Rally-X 54 300 -> 29 900 cycles. Points measured on the way: keep fixed
+costs out of every pass (SAT writes start a pass every frame), never
+rewrite all 256 glyphs for a backdrop change, compare names with REPE
+CMPSW after a flip, and a shadow of the colour table (rewritten with the
+same values). Peaks left: a flip's `diff8` and flag copy with a sprite
+pattern table move in the same frame.
+
 ### Titles that trap (vaeg, 2026-10-18, frames of play)
 
 | Title (ROM size) | Traps/frame | BIOS calls/frame | Where |

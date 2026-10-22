@@ -49,6 +49,11 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
   commercial ROMs. `--msx-bios` puts it on `build/private/msx88va-msxbios.d88`
   as MSXBIOS.ROM, which MSX.COM runs unpatched instead of C-BIOS (RAM in
   slot 0 pages 2-3, printer ports trapped as never busy).
+- **The user's gaiji RAM.** MSX.COM saves the battery-backed gaiji area
+  to GAIJI.BAK (kept when present) before the program overwrites it for
+  Graphics I; `MSX /R` puts it back. Never write B0800h-B1FBFh without that
+  copy, and never B0000h-B07FFh or B1FC0h- (JFP learning area, memory
+  switches).
 - **C-BIOS compatibility.** A routine done natively must leave the Z80
   registers and flags as the C-BIOS routine does (games compute their
   next call from them; see DESIGN "M04").

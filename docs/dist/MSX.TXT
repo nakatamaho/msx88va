@@ -3,7 +3,8 @@ msx88va - an MSX1 cartridge player for the NEC PC-88VA and PC-88VA2
 This disk is MS-DOS 4.0 for the PC-88VA (FreeDOS-88VA project, MIT
 licence) with MSX.COM. AUTOEXEC.BAT runs MSX.
 
-  MSX [cartridge.ROM]
+  MSX [/N] [cartridge.ROM]
+  MSX /R
 
 MSX.COM needs, in the current directory:
 
@@ -32,5 +33,16 @@ SPACE or Z (trigger A), X (trigger B). HELP resets the MSX. To leave,
 switch the machine off or reset it.
 
 Display: 256x192 inside a 320x200 screen. Sound: the PSG on the OPN's SSG.
+
+Graphics I (most 1984 games) is drawn with the VA's user-defined
+characters (gaiji), which is faster. They live in battery-backed RAM, so
+MSX first saves them to GAIJI.BAK on this disk (the disk must be
+writable; an existing GAIJI.BAK is kept). To put your own characters
+back, press . (or ESC) in the cartridge menu to return to DOS and run
+
+  MSX /R
+
+which restores them from GAIJI.BAK and deletes it. MSX /N leaves the
+characters alone and draws everything in graphics memory.
 
 msx88va: two-clause BSD licence (LICENSE.TXT).

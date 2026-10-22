@@ -24,16 +24,23 @@
 ;
 ; With MSX defined, MSX.COM:
 ;
-;   MSX [cartridge]
+;   MSX [/N] [cartridge]
+;   MSX /R
+;
+; (. or ESC in the menu returns to DOS.)
 ;
 ; reads MSXBIOS.ROM (an MSX1 main ROM of the user's, run unpatched) or
 ; else C-BIOS 0.29a (CBIOS_M1.ROM, CBIOS_L1.ROM) from the current
 ; directory, checks and patches C-BIOS as tools/cbios.py lists,
 ; reads the cartridge (8, 16 or 32 KiB, from page 1) named on the command
 ; line, or else the one *.ROM file of the current directory other than
-; C-BIOS (a menu when there are several, none: no cartridge), then copies
-; the MSX program (src/msx/msx.asm, assembled for BASE) to BASE:0000 and
-; starts it. It does not return: the program takes the machine over.
+; C-BIOS (a menu when there are several, none: no cartridge), saves the
+; gaiji RAM to GAIJI.BAK (unless /N, or GAIJI.BAK exists: an earlier copy
+; is kept; the MSX program then shows Graphics I with user-defined
+; characters), then copies the MSX program (src/msx/msx.asm, assembled
+; for BASE) to BASE:0000 and starts it. It does not return: the program
+; takes the machine over. MSX /R puts the gaiji RAM back from GAIJI.BAK,
+; deletes it, and returns to DOS.
 ;
 ; Without MSX it only copies its payload to BASE:0000 and starts it (the
 ; probe disks).
@@ -48,10 +55,12 @@
 %include "msxdata.inc"
 
 %ifdef MSX
-MAIN_SEG	equ	BASE + 0400h	; as in src/msx/msx.asm
-LOGO_SEG	equ	BASE + 0c00h
-CART_SEG	equ	BASE + 1000h
+MAIN_SEG	equ	BASE + 0600h	; as in src/msx/msx.asm
+LOGO_SEG	equ	BASE + 0e00h
+CART_SEG	equ	BASE + 1200h
 MAX_CARTS	equ	35		; keys 1-9, A-Z
+GAIJI		equ	0800h		; B0000h + : the gaiji area
+GAIJI_BYTES	equ	17c0h		; B0800h-B1FBFh (src/pcg/pcgtest.asm)
 %endif
 
 start:		mov	sp,stack_top
@@ -76,8 +85,18 @@ start:		mov	sp,stack_top
 		jmp	fail
 .memory:
 %ifdef MSX
-		call	load_cbios
+		call	parse_args
+		cmp	byte [opt_r],0
+		je	.run
+		call	gaiji_restore
+		mov	ah,09h
+		int	21h
+		mov	ax,4c00h
+		adc	al,0
+		int	21h
+.run:		call	load_cbios
 		call	choose_cart
+		call	gaiji_save
 		call	load_cart
 %endif
 		mov	dx,s_start
@@ -184,17 +203,32 @@ load_cbios:	mov	dx,f_msxbios
 		jmp	fail
 
 ; ---------------------------------------------------------------------------
-; The cartridge's file name to cart_name (empty: none).
+; The command line: /R, /N, and the cartridge's file name to cart_name
+; (empty: none).
 
-choose_cart:	mov	si,81h			; the command line
+parse_args:	mov	si,81h
 .skip:		lodsb
 		cmp	al,' '
 		je	.skip
 		cmp	al,9
 		je	.skip
 		cmp	al,13
-		je	.search
-		mov	di,cart_name		; the first word
+		je	.ret
+		cmp	al,'/'
+		jne	.word
+		lodsb
+		cmp	al,13
+		je	.ret
+		and	al,0dfh
+		cmp	al,'R'
+		jne	.n
+		mov	byte [opt_r],1
+		jmp	.skip
+.n:		cmp	al,'N'
+		jne	.skip
+		mov	byte [opt_n],1
+		jmp	.skip
+.word:		mov	di,cart_name		; the first word
 .copy:		stosb
 		lodsb
 		cmp	al,' '
@@ -204,6 +238,13 @@ choose_cart:	mov	si,81h			; the command line
 		cmp	al,13
 		jne	.copy
 .end:		mov	byte [di],0
+		dec	si
+		jmp	.skip
+.ret:		ret
+
+; The cartridge named, or a choice of the *.ROM files.
+choose_cart:	cmp	byte [cart_name],0
+		je	.search
 		ret
 .search:	mov	dx,dta			; the *.ROM files but C-BIOS
 		mov	ah,1ah
@@ -283,7 +324,13 @@ choose_cart:	mov	si,81h			; the command line
 		call	print
 .key:		mov	ah,08h
 		int	21h
-		cmp	al,'0'
+		cmp	al,1bh			; ESC or '.': back to DOS (for
+		je	.dos			; MSX /R)
+		cmp	al,'.'
+		jne	.digit
+.dos:		mov	ax,4c00h
+		int	21h
+.digit:		cmp	al,'0'
 		je	.none
 		and	al,0dfh			; letters upper case, digits
 		cmp	al,'A'			; 31h-39h -> 11h-19h
@@ -315,6 +362,128 @@ item_key:	add	al,'1'
 		jbe	.ret
 		add	al,'A' - '9' - 1
 .ret:		ret
+
+; ---------------------------------------------------------------------------
+; The gaiji RAM (kanji ROM #2's backup RAM, port 153h SMBC 9, byte access
+; only) and GAIJI.BAK, through CART_SEG (the cartridge comes later).
+
+; Unless /N: GAIJI.BAK kept or written, then pcg_ok in the payload's header.
+gaiji_save:	cmp	byte [opt_n],0
+		jne	.ret
+		mov	dx,f_gaiji
+		mov	ax,3d00h
+		int	21h
+		jc	.save
+		mov	bx,ax			; kept from an earlier run
+		mov	ah,3eh
+		int	21h
+		mov	dx,s_gaiji_kept
+		jmp	.ok
+.save:		push	ds
+		push	es
+		mov	ax,CART_SEG
+		mov	es,ax
+		mov	ax,0b000h
+		mov	ds,ax
+		mov	si,GAIJI
+		xor	di,di
+		mov	cx,GAIJI_BYTES
+		call	gaiji_on
+		rep	movsb
+		call	gaiji_off
+		pop	es
+		pop	ds
+		mov	dx,f_gaiji
+		xor	cx,cx
+		mov	ah,3ch
+		int	21h
+		jc	.fail
+		mov	bx,ax
+		push	ds
+		mov	ax,CART_SEG
+		mov	ds,ax
+		xor	dx,dx
+		mov	cx,GAIJI_BYTES
+		mov	ah,40h
+		int	21h
+		pop	ds
+		jc	.fail_close
+		cmp	ax,GAIJI_BYTES
+		jne	.fail_close
+		mov	ah,3eh
+		int	21h
+		jc	.fail_delete
+		mov	dx,s_gaiji_saved
+.ok:		call	print
+		mov	byte [payload + HEADER + 12],1	; pcg_ok
+.ret:		ret
+.fail_close:	mov	ah,3eh
+		int	21h
+.fail_delete:	mov	dx,f_gaiji		; no half-written copy
+		mov	ah,41h
+		int	21h
+.fail:		mov	dx,s_gaiji_fail
+		jmp	print
+
+; /R: the gaiji RAM from GAIJI.BAK, which is then deleted. DX: the message;
+; CF: not done.
+gaiji_restore:	mov	dx,f_gaiji
+		mov	bx,CART_SEG
+		mov	cx,GAIJI_BYTES + 1
+		call	read_file
+		jc	.none
+		cmp	ax,GAIJI_BYTES
+		jne	.bad
+		push	ds
+		push	es
+		mov	ax,0b000h
+		mov	es,ax
+		mov	ax,CART_SEG
+		mov	ds,ax
+		xor	si,si
+		mov	di,GAIJI
+		mov	cx,GAIJI_BYTES
+		call	gaiji_on
+		rep	movsb
+		call	gaiji_off
+		pop	es
+		pop	ds
+		mov	dx,f_gaiji
+		mov	ah,41h
+		int	21h
+		mov	dx,s_restored
+		clc
+		ret
+.none:		mov	dx,s_no_gaiji
+		stc
+		ret
+.bad:		mov	dx,s_bad_gaiji
+		stc
+		ret
+
+; Port 153h: SMBC 9 with interrupts off (gaiji_on), and back as it was
+; (gaiji_off). Keep every register; DS may be anything.
+gaiji_on:	push	ax
+		push	dx
+		cli
+		mov	dx,0153h
+		in	al,dx
+		mov	[cs:old_153],al
+		and	al,0f0h
+		or	al,09h
+		out	dx,al
+		pop	dx
+		pop	ax
+		ret
+gaiji_off:	push	ax
+		push	dx
+		mov	dx,0153h
+		mov	al,[cs:old_153]
+		out	dx,al
+		sti
+		pop	dx
+		pop	ax
+		ret
 
 ; ---------------------------------------------------------------------------
 ; The cartridge into CART_SEG; cart_pages in the payload's header.
@@ -403,11 +572,22 @@ s_bad_cbios	db	'CBIOS_M1.ROM or CBIOS_L1.ROM is not C-BIOS 0.29a for the MSX1.'
 		db	13, 10, '$'
 s_msxbios	db	'MSX BIOS: MSXBIOS.ROM', 13, 10, '$'
 s_bad_msxbios	db	'MSXBIOS.ROM is not an MSX1 main ROM (32 KiB).', 13, 10, '$'
-s_menu		db	'Cartridges:', 13, 10, '0 none', 13, 10, '$'
+s_menu		db	'Cartridges:', 13, 10, '0 none     . or ESC back to DOS', 13, 10, '$'
 s_choose	db	'Number? $'
 s_cart		db	13, 10, 'Cartridge: $'
 s_no_cart	db	'The cartridge file cannot be read.', 13, 10, '$'
 s_cart_size	db	'The cartridge must be 8, 16 or 32 KiB (no mapper).', 13, 10, '$'
+s_gaiji_saved	db	'The gaiji RAM is saved in GAIJI.BAK; MSX /R puts it back.', 13, 10, '$'
+s_gaiji_kept	db	'GAIJI.BAK holds the gaiji RAM; MSX /R puts it back.', 13, 10, '$'
+s_gaiji_fail	db	'GAIJI.BAK cannot be written: Graphics I without the gaiji RAM.'
+		db	13, 10, '$'
+s_restored	db	'The gaiji RAM is restored from GAIJI.BAK.', 13, 10, '$'
+s_no_gaiji	db	'There is no GAIJI.BAK to restore.', 13, 10, '$'
+s_bad_gaiji	db	'GAIJI.BAK is not a copy of the gaiji RAM.', 13, 10, '$'
+f_gaiji		db	'GAIJI.BAK', 0
+opt_r		db	0
+opt_n		db	0
+old_153		db	0
 f_msxbios	db	'MSXBIOS.ROM', 0
 f_main		db	'CBIOS_M1.ROM', 0
 f_logo		db	'CBIOS_L1.ROM', 0
