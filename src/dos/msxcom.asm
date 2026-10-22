@@ -148,6 +148,29 @@ load_cbios:	mov	dx,f_msxbios
 		mov	byte [payload + HEADER + 11],0	; ram_slot: RAM in slot 0
 		mov	dx,s_msxbios
 		call	print
+		mov	ax,MAIN_SEG		; its VDP, PSG and keyboard routines
+		mov	es,ax			; by CALLN when its SHA-1 is the one
+		call	sha1_rom		; tools/msxbios.py knows
+		push	cs
+		pop	es
+		mov	si,sha_h
+		mov	di,msx_sha1
+		mov	cx,10
+		repe	cmpsw
+		mov	dx,s_msx_slow
+		jne	.msx_said
+		mov	ax,MAIN_SEG
+		mov	es,ax
+		mov	si,msx_patches
+.callns:	lodsw
+		cmp	ax,0ffffh
+		je	.msx_fast
+		mov	di,ax
+		mov	word [es:di],0ededh	; CALLN 71h
+		mov	byte [es:di + 2],71h
+		jmp	.callns
+.msx_fast:	mov	dx,s_msx_fast
+.msx_said:	call	print
 		jmp	.done
 .bad_msx:	mov	dx,s_bad_msxbios
 		jmp	fail
@@ -165,11 +188,23 @@ load_cbios:	mov	dx,f_msxbios
 		jc	.missing
 		cmp	ax,4000h
 		jne	.bad
-		mov	si,patches		; check, then apply, each patch:
-						; offset (word), length, old bytes,
-						; new bytes
+		mov	si,patches
 		mov	bx,MAIN_SEG
 		mov	es,bx
+		call	apply_patches
+		jc	.bad
+.done:		push	cs
+		pop	es
+		ret
+.missing:	mov	dx,s_no_cbios
+		jmp	fail
+.bad:		mov	dx,s_bad_cbios
+		jmp	fail
+
+; The patch table at SI on the ROM at ES:0000: every patch's old bytes
+; checked, then all applied; CF = 1 (nothing applied) when one differs.
+; Each: offset (word), length, old bytes, new bytes; FFFFh ends.
+apply_patches:	push	si
 .check:		lodsw
 		cmp	ax,0ffffh
 		je	.apply
@@ -178,15 +213,18 @@ load_cbios:	mov	dx,f_msxbios
 		xor	ch,ch
 		mov	cl,al
 		repe	cmpsb
-		jne	.bad
+		jne	.differ
 		add	si,cx			; the rest of the old bytes (none)
 		mov	cl,al
 		add	si,cx			; the new bytes
 		jmp	.check
-.apply:		mov	si,patches
+.differ:	pop	si
+		stc
+		ret
+.apply:		pop	si
 .ap:		lodsw
 		cmp	ax,0ffffh
-		je	.done
+		je	.ret
 		mov	di,ax
 		lodsb
 		xor	ch,ch
@@ -194,13 +232,189 @@ load_cbios:	mov	dx,f_msxbios
 		add	si,cx			; skip the old bytes
 		rep	movsb
 		jmp	.ap
-.done:		push	cs
-		pop	es
+.ret:		clc
 		ret
-.missing:	mov	dx,s_no_cbios
-		jmp	fail
-.bad:		mov	dx,s_bad_cbios
-		jmp	fail
+
+; ---------------------------------------------------------------------------
+; SHA-1 (FIPS 180-4) of the 32 KiB at ES:0000 into sha_h: h0-h4 as dwords
+; (low word first). 512 blocks and the padding block (80h, zeros, the
+; length 40000h bits).
+
+%macro ROL1 0				; DX:AX rotated left by 1
+		shl	ax,1
+		rcl	dx,1
+		adc	ax,0
+%endmacro
+%macro ROR1 0				; DX:AX rotated right by 1
+		shr	dx,1
+		rcr	ax,1
+		jnc	%%n
+		or	dh,80h
+%%n:
+%endmacro
+
+sha1_rom:	mov	si,sha_init
+		mov	di,sha_h
+		mov	cx,10
+.init:		mov	ax,[si]			; (ES is the ROM)
+		mov	[di],ax
+		add	si,2
+		add	di,2
+		loop	.init
+		xor	si,si
+		mov	cx,512
+.blk:		push	cx
+		mov	di,sha_w		; W0-15: the block, big-endian
+		mov	cx,16
+.ld:		mov	ax,[es:si]
+		xchg	ah,al
+		mov	[di + 2],ax
+		mov	ax,[es:si + 2]
+		xchg	ah,al
+		mov	[di],ax
+		add	si,4
+		add	di,4
+		loop	.ld
+		push	si
+		call	sha1_block
+		pop	si
+		pop	cx
+		loop	.blk
+		mov	di,sha_w		; the padding block
+		xor	ax,ax
+		mov	cx,32
+.z:		mov	[di],ax
+		add	di,2
+		loop	.z
+		mov	byte [sha_w + 3],80h
+		mov	byte [sha_w + 15 * 4 + 2],04h	; 00040000h bits
+		jmp	sha1_block
+
+; One block: W16-79, the 80 rounds, h += a-e. DS = CS.
+sha1_block:	mov	di,sha_w + 16 * 4
+		mov	cx,64
+.x:		mov	ax,[di - 12]		; W[t-3] ^ W[t-8] ^ W[t-14] ^
+		mov	dx,[di - 10]		; W[t-16], rotated left 1
+		xor	ax,[di - 32]
+		xor	dx,[di - 30]
+		xor	ax,[di - 56]
+		xor	dx,[di - 54]
+		xor	ax,[di - 64]
+		xor	dx,[di - 62]
+		ROL1
+		mov	[di],ax
+		mov	[di + 2],dx
+		add	di,4
+		loop	.x
+		mov	si,sha_h		; a-e = h0-h4
+		mov	di,sha_v
+		mov	cx,10
+.ld:		mov	ax,[si]
+		mov	[di],ax
+		add	si,2
+		add	di,2
+		loop	.ld
+		xor	bx,bx			; BX: 4t
+.r:		mov	ax,[sha_v]		; a rotated left 5
+		mov	dx,[sha_v + 2]
+%rep 5
+		ROL1
+%endrep
+		mov	[sha_t],ax
+		mov	[sha_t + 2],dx
+		cmp	bx,20 * 4
+		jb	.f1
+		cmp	bx,40 * 4
+		jb	.f2
+		cmp	bx,60 * 4
+		jb	.f3
+		call	.parity
+		add	ax,0c1d6h
+		adc	dx,0ca62h
+		jmp	.sum
+.f1:		mov	ax,[sha_v + 4]		; (b & c) | (~b & d)
+		mov	cx,ax
+		and	ax,[sha_v + 8]
+		not	cx
+		and	cx,[sha_v + 12]
+		or	ax,cx
+		mov	dx,[sha_v + 6]
+		mov	cx,dx
+		and	dx,[sha_v + 10]
+		not	cx
+		and	cx,[sha_v + 14]
+		or	dx,cx
+		add	ax,7999h
+		adc	dx,5a82h
+		jmp	.sum
+.f2:		call	.parity
+		add	ax,0eba1h
+		adc	dx,6ed9h
+		jmp	.sum
+.f3:		mov	ax,[sha_v + 4]		; (b & c) | (d & (b | c))
+		mov	cx,ax
+		and	ax,[sha_v + 8]
+		or	cx,[sha_v + 8]
+		and	cx,[sha_v + 12]
+		or	ax,cx
+		mov	dx,[sha_v + 6]
+		mov	cx,dx
+		and	dx,[sha_v + 10]
+		or	cx,[sha_v + 10]
+		and	cx,[sha_v + 14]
+		or	dx,cx
+		add	ax,0bcdch
+		adc	dx,8f1bh
+.sum:		add	ax,[sha_t]		; + rotl5(a) + e + W[t]
+		adc	dx,[sha_t + 2]
+		add	ax,[sha_v + 16]
+		adc	dx,[sha_v + 18]
+		add	ax,[sha_w + bx]
+		adc	dx,[sha_w + bx + 2]
+		push	dx
+		push	ax
+		mov	ax,[sha_v + 12]		; e = d
+		mov	[sha_v + 16],ax
+		mov	ax,[sha_v + 14]
+		mov	[sha_v + 18],ax
+		mov	ax,[sha_v + 8]		; d = c
+		mov	[sha_v + 12],ax
+		mov	ax,[sha_v + 10]
+		mov	[sha_v + 14],ax
+		mov	ax,[sha_v + 4]		; c = b rotated left 30
+		mov	dx,[sha_v + 6]
+		ROR1
+		ROR1
+		mov	[sha_v + 8],ax
+		mov	[sha_v + 10],dx
+		mov	ax,[sha_v]		; b = a
+		mov	[sha_v + 4],ax
+		mov	ax,[sha_v + 2]
+		mov	[sha_v + 6],ax
+		pop	ax			; a = the sum
+		pop	dx
+		mov	[sha_v],ax
+		mov	[sha_v + 2],dx
+		add	bx,4
+		cmp	bx,80 * 4
+		jae	.add
+		jmp	.r
+.add:		xor	bx,bx			; h += a-e
+.h:		mov	ax,[sha_v + bx]
+		mov	dx,[sha_v + bx + 2]
+		add	[sha_h + bx],ax
+		adc	[sha_h + bx + 2],dx
+		add	bx,4
+		cmp	bx,20
+		jb	.h
+		ret
+.parity:	mov	ax,[sha_v + 4]		; b ^ c ^ d
+		xor	ax,[sha_v + 8]
+		xor	ax,[sha_v + 12]
+		mov	dx,[sha_v + 6]
+		xor	dx,[sha_v + 10]
+		xor	dx,[sha_v + 14]
+		ret
 
 ; ---------------------------------------------------------------------------
 ; The command line: /R, /N, and the cartridge's file name to cart_name
@@ -572,6 +786,14 @@ s_bad_cbios	db	'CBIOS_M1.ROM or CBIOS_L1.ROM is not C-BIOS 0.29a for the MSX1.'
 		db	13, 10, '$'
 s_msxbios	db	'MSX BIOS: MSXBIOS.ROM', 13, 10, '$'
 s_bad_msxbios	db	'MSXBIOS.ROM is not an MSX1 main ROM (32 KiB).', 13, 10, '$'
+s_msx_fast	db	'Its VDP, PSG and keyboard routines run natively.', 13, 10, '$'
+s_msx_slow	db	'Not the BIOS version known (SHA-1, tools/msxbios.py): run as'
+		db	' it is, slower.', 13, 10, '$'
+sha_init	dd	67452301h, 0efcdab89h, 98badcfeh, 10325476h, 0c3d2e1f0h
+sha_h		times	5 dd 0
+sha_v		times	5 dd 0			; a-e
+sha_t		dd	0
+sha_w		times	80 dd 0
 s_menu		db	'Cartridges:', 13, 10, '0 none     . or ESC back to DOS', 13, 10, '$'
 s_choose	db	'Number? $'
 s_cart		db	13, 10, 'Cartridge: $'

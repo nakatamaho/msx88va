@@ -39,7 +39,8 @@
 ; and injects the Z80's mode 1 interrupt while the VDP's interrupt line is
 ; active.
 ;
-; HELP (VA keyboard) resets the MSX.
+; HELP (VA keyboard) resets the MSX. F10 opens the settings page (frame
+; skipping, the gaiji cells) with the MSX paused.
 
 		cpu	186
 		org	0
@@ -358,11 +359,20 @@ vrtc:		push	bp
 		jmp	.no_help
 .reset:		call	restart
 		jmp	.eoi
-.no_help:
+.no_help:	call	settings_check		; F10: the settings page
+		call	stats_tick
+		call	draw_this		; CF: the picture skipped
+		pushf
 		or	byte [vstatus],80h	; the frame flag
+		popf
+		jc	.skipped
 		call	render_step
 		call	sprite_step
-		call	sprite_flags
+		jmp	.flags
+.skipped:	cmp	byte [spr_all],0	; the sprite set-up must be current
+		je	.flags			; for the flags
+		call	sprite_step
+.flags:		call	sprite_flags
 %ifdef DUMP_VRAM				; vaeg tests: VRAM and the
 		call	dump_vram		; registers into spare GVRAM
 %endif
@@ -511,7 +521,12 @@ trap:		push	bp
 		jne	.not_out
 		add	word [bp + 2],2		; OUT (n),A
 		mov	ah,bh
+		push	bx
 		call	port_out
+		pop	bx
+		cmp	bh,98h
+		jne	.done
+		call	out_loop		; a known loop: the rest at once
 		jmp	.done
 .not_out:	cmp	bl,0dbh
 		jne	.ed
@@ -529,6 +544,101 @@ trap:		push	bp
 		pop	bp
 		iret
 .ed:		jmp	trap_ed
+
+; After a trapped OUT (98h),A at P, in a subroutine P: OUT (98h),A; RET
+; (Star Force's E407h in RAM, called once a byte): when its caller is one
+; of these loops, the loop's remaining bytes go to VRAM now and the Z80
+; resumes after the DJNZ with the registers as the loop leaves them (B =
+; 0, HL past the bytes, A the last byte; the loop sets no flags):
+;   T: LD A,(HL); CALL P; INC HL; DJNZ T   (7Eh CDh P 23h 10h d)
+;   T: LD A,(HL); INC HL; CALL P; DJNZ T   (7Eh 23h CDh P 10h d)
+; Found by the code's shape, not by a title's addresses. In the trap
+; handler: CX = the Z80 BC, DS = CS; keeps every register but CH (B).
+out_loop:	cmp	word [bp + 4],Z80SEG
+		je	.z80
+		ret
+.z80:		pusha
+		push	es
+		mov	ax,Z80SEG
+		mov	es,ax
+		mov	si,[bp + 2]		; after the OUT
+		cmp	byte [es:si],0c9h	; RET
+		jne	.no
+		sub	si,2			; SI: P
+		mov	di,[bp]			; Z80 SP
+		mov	di,[es:di]		; DI: R, the return address
+		cmp	word [es:di],1023h	; INC HL; DJNZ
+		jne	.second
+		mov	al,[es:di + 2]
+		cbw
+		add	ax,di
+		add	ax,3			; T
+		mov	bx,ax
+		add	ax,4
+		cmp	ax,di
+		jne	.no
+		cmp	word [es:bx],0cd7eh	; LD A,(HL); CALL P
+		jne	.no
+		cmp	[es:bx + 2],si
+		jne	.no
+		lea	dx,[di + 3]		; DX: after the DJNZ
+		mov	bx,[bp + T_HL]		; BX: the next byte
+		inc	bx
+		jmp	.run
+.second:	cmp	byte [es:di],10h	; DJNZ
+		jne	.no
+		mov	al,[es:di + 1]
+		cbw
+		add	ax,di
+		add	ax,2			; T
+		mov	bx,ax
+		add	ax,5
+		cmp	ax,di
+		jne	.no
+		cmp	word [es:bx],237eh	; LD A,(HL); INC HL
+		jne	.no
+		cmp	byte [es:bx + 2],0cdh	; CALL P
+		jne	.no
+		cmp	[es:bx + 3],si
+		jne	.no
+		lea	dx,[di + 2]
+		mov	bx,[bp + T_HL]		; (HL is past the byte written)
+.run:		mov	cl,ch			; CX: the bytes left, (B - 1) mod 256
+		dec	cl
+		xor	ch,ch
+		mov	[bp + 2],dx		; PC after the DJNZ, the RET's
+		add	word [bp],2		; address popped
+		mov	ax,bx
+		add	ax,cx
+		mov	[bp + T_HL],ax		; HL past them
+		jcxz	.b0
+		push	ds
+		mov	si,bx			; Z80 HL.. -> VRAM vaddr..
+		mov	di,[vaddr]
+		push	di
+		push	cx
+		mov	ax,VRAMSEG
+		mov	es,ax
+		mov	ax,Z80SEG
+		mov	ds,ax
+.copy:		and	di,3fffh
+		movsb
+		loop	.copy
+		mov	al,[si - 1]
+		pop	cx
+		pop	bx
+		pop	ds
+		mov	[bp + T_A],al		; A: the last byte
+		mov	[vahead],al
+		mov	ax,di
+		call	vram_written
+.b0:		pop	es
+		popa
+		mov	ch,0			; B = 0
+		ret
+.no:		pop	es
+		popa
+		ret
 
 ; Port AH, data AL. Keeps every register but AX, BX, SI.
 port_out:	mov	bl,ah
@@ -675,6 +785,9 @@ bios_call:	push	bp
 		mov	di,[bp + 2]
 		sub	di,3
 		mov	si,bios_table
+		cmp	byte [cs:ram_slot],0	; an MSX BIOS (tools/msxbios.py)
+		jne	.find
+		mov	si,msx_table
 .find:		cmp	word [cs:si],0ffffh
 		je	bios_ret		; not ours: just return
 		cmp	[cs:si],di
@@ -910,8 +1023,11 @@ h_snsmat:	push	cs
 		BIOS_EI
 		jmp	bios_ret
 
-; key_in: NEWKEY = rows 0-10, then the registers as the loop leaves them.
-h_keyin:	push	cs
+; key_in: NEWKEY = rows 0-10, then the registers as the loop leaves them
+; (HL past NEWKEY, B = 0, C = row 11); on at AX (keyin).
+h_keyin:	mov	ax,KEYIN_CONT
+keyin:		push	ax
+		push	cs
 		pop	ds
 		mov	ax,Z80SEG
 		mov	es,ax
@@ -927,8 +1043,268 @@ h_keyin:	push	cs
 		inc	al
 		mov	ah,0
 		mov	[bp + B_CX],ax		; B = 0, C = row 11
-		mov	ax,KEYIN_CONT
+		pop	ax
 		jmp	bios_cont
+
+; ---------------------------------------------------------------------------
+; The Japanese MSX1 BIOS version 1.0 (the user's MSXBIOS.ROM), patched by
+; MSX.COM (tools/msxbios.py). Its routines leave other registers and flags
+; than C-BIOS's: each handler below as the routine it replaces (noted
+; with each). Flags: S, Z, H, P/V, C set as the routine's last flag-setting
+; instruction does; N and the undefined bits kept.
+
+msx_table	dw	0815h, m_filvrm		; A: data, BC: count, HL: VRAM
+		dw	070fh, m_ldirmv		; HL: VRAM, DE: RAM, BC: count
+		dw	0744h, m_ldirvm		; HL: RAM, DE: VRAM, BC: count
+		dw	07dfh, m_setwrt		; HL: VRAM
+		dw	07ech, m_setrd		; HL: VRAM
+		dw	07cdh, m_wrtvrm		; HL: VRAM, A: data
+		dw	07d7h, m_rdvrm		; HL: VRAM -> A
+		dw	057fh, m_wrtvdp		; C: register, B: data
+		dw	1102h, h_wrtpsg		; A: register, E: data; AF kept
+		dw	110eh, h_rdpsg		; A: register -> A; flags kept
+		dw	1449h, h_rdvdp		; -> A: status; flags kept
+		dw	1452h, m_snsmat		; A: row -> A
+		dw	0c4dh, m_status		; the interrupt's IN A,(99h)
+		dw	0d12h, m_keyin		; the interrupt's keyboard scan
+		dw	1226h, m_row8		; GTTRIG's row 8
+		dw	121fh, m_joy		; GTSTCK's PSG port select and read
+		dw	0ffffh
+M_STATUS_CONT	equ	0c50h			; after AND A
+M_KEYIN_CONT	equ	0d26h			; after the row loop
+M_JOY_CONT	equ	1224h			; EI; RET
+M_WRTVDP_CONT	equ	0589h			; WRTVDP after its OUTs: EI, the
+						; register's copy in RG0SAV
+
+; The Z80 flags from AL after a logical instruction (S, Z, P from AL; C 0;
+; H = AH: 10h after AND, 0 after OR or XOR). Keeps AX.
+m_logic_flags:	push	ax
+		mov	dl,ah
+		or	al,al
+		lahf
+		and	ah,0c4h			; S, Z, P
+		or	ah,dl
+		and	byte [bp + 6],2ah
+		or	[bp + 6],ah
+		pop	ax
+		ret
+
+; Z = 1, S = H = C = 0, P = 1: after LD A,C; OR B with BC = 0.
+m_zero_flags:	and	byte [bp + 6],2ah
+		or	byte [bp + 6],44h
+		ret
+
+; WRTVDP: LD A,B; OUT; LD A,C; OR 80h; OUT; then EI and the copy go on in
+; the Z80 code (A = B there, B = 0, flags from OR 80h, then ADD HL,BC).
+m_wrtvdp:	push	cs
+		pop	ds
+		mov	bl,cl
+		and	bx,7
+		mov	al,ch
+		call	set_vreg
+		mov	byte [vfirst],0
+		mov	al,cl
+		or	al,80h
+		xor	ah,ah
+		call	m_logic_flags
+		mov	ax,M_WRTVDP_CONT
+		jmp	bios_cont
+
+; SETWRT: A = H AND 3Fh OR 40h (flags of OR), EI.
+m_setwrt:	push	cs
+		pop	ds
+		and	bh,3fh
+		mov	[vaddr],bx
+		mov	byte [vfirst],0
+		mov	al,bh
+		or	al,40h
+		mov	[bp + B_AX],al
+		xor	ah,ah
+		call	m_logic_flags
+		BIOS_EI
+		jmp	bios_ret
+
+; SETRD: A = H AND 3Fh (flags of AND), EI; the VDP reads ahead.
+m_setrd:	push	cs
+		pop	ds
+		and	bh,3fh
+		mov	al,bh
+		mov	[bp + B_AX],al
+		mov	ah,10h
+		call	m_logic_flags
+		mov	[vaddr],bx
+		mov	byte [vfirst],0
+		call	vread
+		BIOS_EI
+		jmp	bios_ret
+
+; RDVRM: SETRD, IN A,(98h): A = the byte, flags as SETRD's.
+m_rdvrm:	push	cs
+		pop	ds
+		and	bh,3fh
+		mov	al,bh
+		mov	ah,10h
+		call	m_logic_flags
+		mov	[vaddr],bx
+		call	vread			; SETRD's read-ahead
+		mov	al,[vahead]
+		mov	[bp + B_AX],al
+		call	vread			; and the IN's
+		mov	byte [vfirst],0
+		BIOS_EI
+		jmp	bios_ret
+
+; WRTVRM: PUSH AF, SETWRT, POP AF, OUT: AF kept, EI.
+m_wrtvrm:	push	cs
+		pop	ds
+		and	bh,3fh
+		mov	cx,VRAMSEG
+		mov	es,cx
+		mov	[es:bx],al
+		mov	[vahead],al
+		call	mark_addr
+		inc	bx
+		and	bh,3fh
+		mov	[vaddr],bx
+		mov	byte [vfirst],0
+		BIOS_EI
+		jmp	bios_ret
+
+; FILVRM: BC bytes of A (0: 65536), AF kept (POP AF), BC = 0, EI.
+m_filvrm:	sti
+		mov	di,bx			; DI: VRAM
+		mov	si,bx			; SI: the address after
+		add	si,cx
+		jcxz	.all
+		cmp	cx,4000h
+		jbe	.go
+.all:		mov	cx,4000h		; every byte of VRAM
+.go:		push	cx
+		mov	dx,VRAMSEG
+		mov	es,dx
+.f:		and	di,3fffh
+		stosb
+		loop	.f
+		pop	cx
+		mov	ax,si
+		push	cs
+		pop	ds
+		call	vram_written
+		mov	word [bp + B_CX],0
+		BIOS_EI
+		jmp	bios_ret
+
+; LDIRVM: EX DE,HL, SETWRT, then LD A,(DE); OUT; INC DE; DEC BC; LD A,C;
+; OR B: HL = VRAM (DE on entry), DE = RAM + BC, BC = 0, A = 0, Z, EI.
+m_ldirvm:	sti
+		push	cx
+		mov	si,bx
+		mov	di,dx
+		mov	ax,VRAMSEG
+		mov	es,ax
+.w:		and	di,3fffh
+		movsb
+		loop	.w			; (BC = 0: 65536)
+		mov	ax,di
+		pop	cx
+		jcxz	.all
+		cmp	cx,4000h
+		jbe	.mark
+.all:		mov	cx,4000h
+.mark:		mov	bx,dx
+		push	cs
+		pop	ds
+		call	vram_written
+		mov	ax,[bp + B_BX]
+		add	ax,[bp + B_CX]
+		mov	cx,[bp + B_DX]
+		mov	[bp + B_BX],cx		; HL = VRAM
+		mov	[bp + B_DX],ax		; DE = RAM + BC
+		jmp	m_block_end
+
+; LDIRMV: SETRD, then IN; LD (DE),A; INC DE; DEC BC; LD A,C; OR B: DE =
+; RAM + BC, HL kept, BC = 0, A = 0, Z, EI.
+m_ldirmv:	sti
+		push	cx
+		mov	si,bx
+		mov	di,dx
+		mov	ax,Z80SEG
+		mov	es,ax
+		mov	ax,VRAMSEG
+		mov	ds,ax
+.r:		and	si,3fffh
+		movsb
+		loop	.r
+		and	si,3fffh
+		pop	cx
+		push	cs
+		pop	ds
+		mov	[vaddr],si
+		mov	byte [vfirst],0
+		add	[bp + B_DX],cx		; DE = RAM + BC
+m_block_end:	mov	word [bp + B_CX],0
+		mov	byte [bp + B_AX],0
+		call	m_zero_flags
+		BIOS_EI
+		jmp	bios_ret
+
+; The interrupt: IN A,(99h); AND A (flags of AND), on at 0C50h.
+m_status:	push	cs
+		pop	ds
+		call	vdp_stat_r
+		mov	[bp + B_AX],al
+		mov	ah,10h
+		call	m_logic_flags
+		mov	ax,M_STATUS_CONT
+		jmp	bios_cont
+
+; The interrupt's scan: NEWKEY = rows 0-10 (as h_keyin), on at 0D26h
+; (which loads A and sets the flags itself).
+m_keyin:	mov	ax,M_KEYIN_CONT
+		jmp	keyin
+
+; DI; IN A,(AAh); AND F0h; ADD A,8; OUT (AAh),A; IN A,(A9h); EI; RET.
+m_row8:		push	cs
+		pop	ds
+		mov	cl,8
+		jmp	m_row
+
+; GTSTCK: OUT (A1h),A (register 15, selected by RDPSG), CALL 110Ch (A =
+; register 14), then EI; RET at 1224h. Flags kept.
+m_joy:		push	cs
+		pop	ds
+		mov	byte [psg_reg],15
+		call	psg_data_w
+		mov	byte [psg_reg],14
+		call	psg_data_r
+		mov	[bp + B_AX],al
+		mov	ax,M_JOY_CONT
+		jmp	bios_cont
+
+; SNSMAT: LD C,A; IN A,(AAh); AND F0h; ADD A,C; OUT (AAh),A; IN A,(A9h):
+; C = the row as given, A = the row's keys, flags of the ADD, EI.
+m_snsmat:	push	cs
+		pop	ds
+		mov	[bp + B_CX],al		; C
+		mov	cl,al
+m_row:		mov	al,[ppi_c]		; CL: the row to add
+		and	al,0f0h
+		add	al,cl
+		lahf
+		mov	dl,0
+		jno	.v
+		mov	dl,04h
+.v:		and	ah,0d1h			; S, Z, H, C; P/V: overflow
+		or	ah,dl
+		and	byte [bp + 6],2ah
+		or	[bp + 6],ah
+		mov	[ppi_c],al
+		mov	bl,al
+		and	bl,0fh
+		call	matrix_row
+		mov	[bp + B_AX],al
+		BIOS_EI
+		jmp	bios_ret
 
 ; Z80 register number (B C D E H L - A) -> offset from BP; 0: none.
 ed_regs		db	T_BC + 1, T_BC, T_DE + 1, T_DE, T_HL + 1, T_HL, 0, T_A
@@ -3317,6 +3693,357 @@ pair_of:	push	ax
 		ret
 
 ; ---------------------------------------------------------------------------
+; Frame skipping. The VRTC handler draws the picture (render_step,
+; sprite_step) only in some frames; the MSX's interrupt, the keyboard and
+; the sprite flags are every frame, so a game keeps its speed and gets the
+; time of the frames not drawn. draw_mode (F10): AUTO skips a frame when
+; the Z80 has not yet taken the last frame's interrupt (the frame flag
+; still set with R1's IE on: the game is late), at most two in a row;
+; EVERY FRAME never skips; 1/2 and 1/3 draw every second or third frame.
+
+; CF = 1: no picture this frame. Before the frame flag is set.
+draw_this:	mov	bl,[draw_mode]
+		xor	bh,bh
+		mov	al,[skip_run]
+		cmp	al,[draw_skips + bx]
+		jae	.draw
+		or	bl,bl
+		jnz	.skip
+		test	byte [vstatus],80h
+		jz	.draw
+		test	byte [vregs + 1],20h
+		jz	.draw
+.skip:		inc	byte [skip_run]
+		stc
+		ret
+.draw:		mov	byte [skip_run],0
+		inc	word [st_drawn]
+		clc
+		ret
+
+; Every 60 frames: the game frames (interrupts taken) and the pictures
+; drawn in them, for the settings page.
+stats_tick:	inc	byte [st_count]
+		cmp	byte [st_count],60
+		jb	.ret
+		mov	byte [st_count],0
+		mov	ax,[injected]
+		mov	bx,ax
+		sub	ax,[st_inj0]
+		mov	[st_games],ax
+		mov	[st_inj0],bx
+		mov	ax,[st_drawn]
+		mov	[st_draws],ax
+		mov	word [st_drawn],0
+.ret:		ret
+
+; ---------------------------------------------------------------------------
+; The settings page. F10 (port 0Dh bit 4, or 0Ch bit 4 as vaeg has it;
+; active low, as in pc88va-galaga) pauses the MSX inside the VRTC handler:
+; the SSG silent, the sprites and the gaiji cells hidden, the page drawn in
+; GVRAM with the MSX ROM's font (its CGTABL, word 0004h). The handler waits
+; for each VRTC on port 40h bit 5 and reads the keys: cursor up and down
+; select an item, left and right change it, F10 again returns, and the
+; picture is drawn again in full. draw_mode and pcg_on are before vars: an
+; MSX reset keeps them. DS = CS.
+
+SVC_ITEMS	equ	2
+
+settings_check:	call	f10_edge
+		jc	settings
+		ret
+
+; CF = 1 when F10 has just been pressed (va_keys as kbd_scan read them).
+f10_edge:	mov	al,[va_keys + 0dh]
+		and	al,[va_keys + 0ch]
+%ifdef TEST_KEYS				; vaeg tests: M (port 03h bit 5),
+		mov	ah,[va_keys + 03h]	; which @hold can hold, as F10
+		shr	ah,1
+		and	al,ah
+%endif
+		not	al
+		and	al,10h			; 10h while held
+		mov	ah,[f10_prev]
+		mov	[f10_prev],al
+		not	ah
+		and	al,ah
+		jz	.no
+		stc
+		ret
+.no:		clc
+		ret
+
+settings:	push	es
+		mov	dx,0153h		; GVRAM at A0000h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,04h
+		out	dx,al
+		mov	ax,0008h		; the SSG's levels 0
+.mute:		call	opn_write
+		inc	al
+		cmp	al,11
+		jb	.mute
+		call	sprites_hide
+		call	pcg_blank
+		mov	byte [svc_keys],0fh	; keys held now act after a release
+.page:		call	settings_draw
+.wait:		call	wait_vrtc
+		call	kbd_scan
+		call	f10_edge
+		jc	.close
+		call	svc_keys_new		; AL: up 1, down 2, left 4, right 8
+		test	al,1
+		jz	.down
+		xor	byte [svc_item],1	; (two items)
+		jmp	.page
+.down:		test	al,2
+		jz	.change
+		xor	byte [svc_item],1
+		jmp	.page
+.change:	and	al,0ch
+		jz	.wait
+		cmp	byte [svc_item],0
+		jne	.gaiji
+		test	al,4			; draw mode: left back, right on
+		jz	.right
+		dec	byte [draw_mode]
+		jns	.page
+		mov	byte [draw_mode],3
+		jmp	.page
+.right:		inc	byte [draw_mode]
+		and	byte [draw_mode],3
+		jmp	.page
+.gaiji:		cmp	byte [pcg_ok],0		; only when GAIJI.BAK holds the
+		je	.wait			; gaiji RAM
+		xor	byte [pcg_on],1
+		mov	byte [vregchg],1	; render_setup picks the loop
+		jmp	.page
+.close:		mov	es,[gvram_seg]		; the picture again, in full
+		xor	di,di
+		xor	ax,ax
+		mov	cx,200 * STRIDE / 2
+		rep	stosw
+		mov	byte [pass_on],0
+		mov	byte [rfull],1
+		mov	byte [vregchg],1
+		mov	byte [skip_run],0
+		mov	bx,8			; the SSG's levels back
+.level:		mov	al,bl
+		mov	ah,[psg + bx]
+		call	opn_write
+		inc	bx
+		cmp	bx,11
+		jb	.level
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
+		pop	es
+		ret
+
+; AL: the cursor keys pressed since the last call (up 1, down 2, left 4,
+; right 8).
+svc_keys_new:	xor	al,al
+		test	byte [va_keys + 08h],02h
+		jnz	.d
+		or	al,1
+.d:		test	byte [va_keys + 0ah],02h
+		jnz	.l
+		or	al,2
+.l:		test	byte [va_keys + 0ah],04h
+		jnz	.r
+		or	al,4
+.r:		test	byte [va_keys + 08h],04h
+		jnz	.k
+		or	al,8
+.k:		mov	ah,[svc_keys]
+		mov	[svc_keys],al
+		not	ah
+		and	al,ah
+		ret
+
+; The next VRTC (port 40h bit 5 off, then on; each wait at most 65536
+; reads).
+wait_vrtc:	xor	cx,cx
+.off:		in	al,40h
+		test	al,20h
+		jz	.on
+		loop	.off
+.on:		in	al,40h
+		test	al,20h
+		jnz	.ret
+		loop	.on
+.ret:		ret
+
+; The 32 TSP sprite descriptors off (SW = 0).
+sprites_hide:	push	es
+		mov	dx,0153h
+		in	al,dx
+		push	ax
+		and	al,0f0h
+		or	al,01h
+		out	dx,al
+		mov	ax,0a000h
+		mov	es,ax
+		mov	di,SPR_TABLE
+		xor	ax,ax
+		mov	cx,32 * 4
+		rep	stosw
+		pop	ax
+		mov	dx,0153h
+		out	dx,al
+		pop	es
+		ret
+
+; The page: GVRAM cleared, the texts, the item values, the counts.
+settings_draw:	mov	es,[gvram_seg]
+		xor	di,di
+		xor	ax,ax
+		mov	cx,200 * STRIDE / 2
+		rep	stosw
+		mov	si,svc_texts
+		call	texts
+		mov	bl,[svc_item]		; the cursor
+		xor	bh,bh
+		mov	ch,[svc_rows + bx]
+		mov	cl,2
+		mov	dl,11
+		mov	al,'>'
+		call	putc_g
+		mov	bl,[draw_mode]		; draw mode
+		xor	bh,bh
+		shl	bx,1
+		mov	si,[draw_names + bx]
+		mov	cx,(5 << 8) | 18
+		mov	dl,15
+		call	text
+		mov	si,s_on			; gaiji cells
+		cmp	byte [pcg_on],0
+		jne	.g
+		mov	si,s_off
+.g:		mov	cx,(7 << 8) | 18
+		call	text
+		cmp	byte [pcg_ok],0
+		jne	.counts
+		mov	si,s_no_bak
+		mov	cx,(8 << 8) | 4
+		mov	dl,14
+		call	text
+		mov	cx,(9 << 8) | 4
+		call	text			; (the next string)
+.counts:	mov	ax,[st_games]
+		mov	cx,(11 << 8) | 4
+		call	number
+		mov	ax,[st_draws]
+		mov	cx,(12 << 8) | 4
+		call	number
+		ret
+
+; Texts from SI: column, row, colour, characters, 0; FFh ends.
+texts:		lodsb
+		cmp	al,0ffh
+		je	.ret
+		mov	cl,al
+		lodsb
+		mov	ch,al
+		lodsb
+		mov	dl,al
+		call	text
+		jmp	texts
+.ret:		ret
+
+; The string at SI (0-terminated) from column CL, row CH, colour DL. SI
+; after the 0.
+text:		lodsb
+		or	al,al
+		jz	.ret
+		call	putc_g
+		inc	cl
+		jmp	text
+.ret:		ret
+
+; AX (0-999) right-aligned in three columns from CL, row CH, colour 15.
+number:		mov	dl,15
+		add	cl,2
+		mov	bx,10
+.d:		push	cx
+		xor	dx,dx
+		div	bx
+		pop	cx
+		push	ax
+		mov	al,dl
+		add	al,'0'
+		mov	dl,15
+		call	putc_g
+		pop	ax
+		dec	cl
+		or	ax,ax
+		jnz	.d
+		ret
+
+; Character AL at column CL (0-39), row CH (0-24), colour DL on black,
+; from the MSX ROM's font. ES = GVRAM. Keeps every register.
+putc_g:		pusha
+		push	ds
+		mov	bl,dl			; DX: the colour in every nibble
+		and	bx,0fh
+		imul	dx,bx,1111h
+		mov	bl,ch			; DI: the cell
+		xor	bh,bh
+		imul	di,bx,8 * STRIDE
+		mov	bl,cl
+		shl	bx,2
+		add	di,bx
+		xor	ah,ah
+		shl	ax,3
+		mov	bx,MAIN_SEG
+		mov	ds,bx
+		mov	si,[0004h]		; CGTABL
+		add	si,ax
+		mov	cx,8
+.row:		lodsb
+		xor	ah,ah
+		shl	ax,2
+		mov	bx,ax
+		mov	ax,[cs:expand + bx]
+		and	ax,dx
+		stosw
+		mov	ax,[cs:expand + bx + 2]
+		and	ax,dx
+		stosw
+		add	di,STRIDE - 4
+		loop	.row
+		pop	ds
+		popa
+		ret
+
+svc_rows	db	5, 7
+draw_names	dw	s_auto, s_every, s_half, s_third
+draw_skips	db	2, 0, 1, 2		; most frames skipped in a row
+s_auto		db	'AUTO       ', 0
+s_every		db	'EVERY FRAME', 0
+s_half		db	'1/2        ', 0
+s_third		db	'1/3        ', 0
+s_on		db	'ON ', 0
+s_off		db	'OFF', 0
+s_no_bak	db	'(no GAIJI.BAK: MSX /N or a', 0
+		db	'protected disk)', 0
+svc_texts	db	4, 2, 15, 'msx88va settings', 0
+		db	4, 5, 15, 'Draw', 0
+		db	4, 7, 15, 'Gaiji cells', 0
+		db	8, 11, 14, 'game frames in the last second', 0
+		db	8, 12, 14, 'pictures drawn', 0
+		db	4, 15, 14, 'AUTO skips drawing a frame when', 0
+		db	4, 16, 14, 'the game is late (at most 2).', 0
+		db	4, 19, 14, 'Up/down: item  left/right: change', 0
+		db	4, 20, 14, 'F10: back to the game', 0
+		db	0ffh
+
+draw_mode	db	0			; 0 AUTO, 1 every frame, 2 1/2, 3 1/3
+svc_item	db	0
+
+; ---------------------------------------------------------------------------
 ; Text output, for the failure message only (text BIOS INT 83h)
 
 puts:		lodsb
@@ -3573,6 +4300,15 @@ spr_conv	db	0			; 1: patterns converted in spr_mode
 flipped		db	0			; render_flip moved a table
 glyphs_all	db	1			; pcg_glyphs: every pattern
 pend_set	db	1			; a pattern or colour flag pending
+skip_run	db	0			; frames skipped in a row
+st_count	db	0			; stats_tick's frames
+f10_prev	db	0
+svc_keys	db	0
+		align	2
+st_drawn	dw	0			; pictures in this second
+st_inj0		dw	0			; injected at its start
+st_games	dw	0			; the last second's game frames
+st_draws	dw	0			; and pictures
 pcg_cols	db	0			; loop_pcg: a colour pending
 g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0

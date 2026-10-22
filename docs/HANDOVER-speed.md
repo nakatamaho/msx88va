@@ -182,7 +182,7 @@ pattern table move in the same frame.
 |---|---|---|---|
 | 1984 maze game (16 KiB) | 0 | 20 | — |
 | 1984 digging game (32 KiB) | 0 | 35 | — |
-| Star Force (32 KiB) | 48 | 11 | 98% at RAM E407h: `OUT (98h),A; RET`, called once a byte from ROM loops such as `LD A,(HL); CALL E407h; INC HL; DJNZ` (4376h, 6428h, 65D7h, 6E74h...) and `LD A,(HL); INC HL; CP C9h; JR Z; CALL E407h; JR` (50EDh, 63E3h) |
+| Star Force (32 KiB; 2026-10-22: 2.4 traps a frame, `out_loop`) | 48 | 11 | 98% at RAM E407h: `OUT (98h),A; RET`, called once a byte from ROM loops such as `LD A,(HL); CALL E407h; INC HL; DJNZ` (4376h, 6428h, 65D7h, 6E74h...) and `LD A,(HL); INC HL; CP C9h; JR Z; CALL E407h; JR` (50EDh, 63E3h) |
 | Antarctic Adventure (16 KiB) | 92 | 0 | its own VRAM routines: copy `LD A,(HL); OUT (98h),A; INC HL; DEC BC; LD A,B; OR C; JR NZ` (44E6h), fill `LD A,H; OUT (98h),A; DEC BC; LD A,B; OR C; JR NZ` (44FAh), run `OUT (98h),A; PUSH HL; POP HL; DJNZ` (456Ah), address set-up `LD A,E; OUT (99h),A; LD A,D; OUT (99h),A` (48C9h) |
 
 At ~200 us a trap these two need 10 and 18 ms a frame on the hardware:

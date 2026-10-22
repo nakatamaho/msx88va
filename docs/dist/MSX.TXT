@@ -12,7 +12,9 @@ MSX.COM needs, in the current directory:
                               (two-clause BSD licence, see CBIOS.TXT)
 
 An MSX1 main ROM of your own (32 KiB) named MSXBIOS.ROM is used instead
-of C-BIOS when it is in the current directory; none is included.
+of C-BIOS when it is in the current directory; none is included. The
+Japanese MSX1 BIOS version 1.0 has its VDP, PSG and keyboard routines
+run natively (fast); another version runs as it is, much slower.
 
 MSX.COM plays a cartridge ROM file: 8, 16 or 32 KiB, without a mapper. Copy
 your own ROM files to this disk (under MS-DOS, or with add_files.py on a
@@ -31,6 +33,17 @@ authors and pages). The games belong to their authors.
 Keys: the VA keyboard is the MSX keyboard. Joystick 1: cursor keys,
 SPACE or Z (trigger A), X (trigger B). HELP resets the MSX. To leave,
 switch the machine off or reset it.
+
+F10 pauses the game and shows the settings (cursor up and down: item,
+left and right: change, F10: back to the game):
+
+  Draw         AUTO (the default) skips drawing a frame when the game is
+               late, at most two in a row; EVERY FRAME; 1/2; 1/3. The
+               game itself runs every frame in all of them.
+  Gaiji cells  ON or OFF (only when GAIJI.BAK was written)
+
+The page also shows the game frames and the pictures drawn in the last
+second.
 
 Display: 256x192 inside a 320x200 screen. Sound: the PSG on the OPN's SSG.
 

@@ -83,7 +83,8 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
     Z80ASM=.../z80asm python3 -I tools/build_cart.py [--name m02cart]
 
 Test options for the MSX program: `--define TEST_RESET=n`, `DUMP_VRAM`,
-`PROFILE` (DESIGN "M04"; DUMP_VRAM slows the game itself).
+`PROFILE` (DESIGN "M04"; DUMP_VRAM slows the game itself), `TEST_KEYS`
+(M acts as F10: vaeg's `@hold` cannot hold F10).
 
 ## Testing in vaeg
 

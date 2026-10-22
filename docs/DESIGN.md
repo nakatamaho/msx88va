@@ -188,6 +188,57 @@ untested.
   VRAM calls copied to spare GVRAM every frame; the copy costs about half
   a frame, so the game runs late while it is on), PROFILE (the Z80 PC at
   every VRTC, a ring at GVRAM C200h).
+- An MSX BIOS of the user's (MSXBIOS.ROM) ran unpatched until 2026-10-22:
+  every VDP, PSG and PPI access of its routines an I/O trap. Bosconian in
+  vaeg (VA model, play): 194 traps a frame (76% the `OUT (98h),A` of
+  LDIRVM's byte loop, 0749h; then WRTPSG, SETWRT, WRTVRM, WRTVDP,
+  SNSMAT), 0.4 interrupts taken a frame against C-BIOS's 0.9: the game at
+  less than half speed in vaeg, and about a quarter on the VA (~200 us a
+  trap: ~39 ms a frame), as the maintainer saw (the start music slow).
+  Now MSX.COM computes the ROM's SHA-1 (`sha1_rom`, about 0.2 s in
+  vaeg) and, when it is the one of `tools/msxbios.py` (the Japanese MSX1
+  BIOS version 1.0), puts CALLN 71h at the start of WRTVDP, RDVRM,
+  WRTVRM, SETRD, SETWRT, FILVRM, LDIRMV, LDIRVM, WRTPSG, RDPSG, RDVDP and
+  SNSMAT; another ROM runs unpatched and MSX.COM says so (checked in
+  vaeg with one byte changed). The repository holds only the digest and
+  the offsets, no byte of the ROM. `bios_call` uses `msx_table` when
+  `ram_slot` is 0. The routines' exits differ from
+  C-BIOS's, so these handlers have their own: LDIRVM HL = DE, DE = HL +
+  BC, BC = 0, A = 0 with Z (LD A,C; OR B); LDIRMV DE = DE + BC, HL kept;
+  FILVRM and WRTVRM keep AF (PUSH/POP AF), FILVRM BC = 0; SETWRT/SETRD A
+  and the flags of OR 40h / AND 3Fh; RDVRM those of SETRD; SNSMAT C = A
+  and the flags of ADD A,C; WRTVDP goes on in the Z80 code at 0589h (EI,
+  the copy in RG0SAV) with the flags of OR 80h; a count of 0 is 65536
+  bytes as in the loops. vaeg: Bosconian 0 traps and 0.9 interrupts a
+  frame, the 18 titles and MSX BASIC start; the interrupt's own status read
+  (0C4Dh) is still one trap a frame. Typing into BASIC with vaeg's
+  `input-line` drops letters with and without the patches (one keyboard
+  scan a frame).
+- PC-88VA, 2026-10-22 (maintainer): Bosconian with the MSX BIOS at the
+  speed of an MSX, the start music right.
+- The MSX BIOS also traps where C-BIOS's routines do not: its interrupt
+  reads the status (0C4Dh) and scans the keyboard with OUT/IN pairs (0D12h,
+  11 rows), and GTSTCK and GTTRIG read the joystick through PSG registers
+  14 and 15 (121Fh) and row 8 (1226h). These four are CALLN 71h too
+  (`m_status`, `m_keyin`, `m_joy`, `m_row8`). Star Force in vaeg: traps a
+  frame 52 -> 13 with the jump-table routines, -> 1.4 with these; in
+  vaeg the ship moves under the joystick as with C-BIOS, and the two runs
+  stay frame for frame alike.
+- Star Force writes its picture through its own subroutine in RAM
+  (E407h: `OUT (98h),A; RET`), called once a byte from ROM loops (41 calls
+  a frame in play). After a trapped `OUT (98h),A` that is followed by RET,
+  `out_loop` looks at the caller: when it is `LD A,(HL); CALL P; INC HL;
+  DJNZ` or `LD A,(HL); INC HL; CALL P; DJNZ` (found by the code's shape),
+  the loop's remaining bytes go to VRAM at once and the Z80 resumes after
+  the DJNZ with B = 0, HL past the bytes, A the last byte and the RET's
+  address popped. Traps a frame in play: 42 -> 2.4 with C-BIOS (on the
+  VA about 8 ms a frame less). The 18 titles look as before with both
+  BIOSes.
+- Star Force's scroll: the background moves down a cell row (8 lines) at
+  a time; the game rewrites about 540 names over a few frames, patterns
+  and colours stay. At MAX_TILES = 64 cells a frame the picture takes
+  about nine frames to follow a step (vaeg: render_step 26 000 cycles a
+  frame on the VA model). Not addressed yet.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
@@ -311,6 +362,36 @@ GVRAM tiles, so a cell costs one TVRAM word instead of ~400 cycles.
   redraw was slower than GVRAM (Bosconian up to 147 000, a VRTC missed).
   The remaining peaks are a table flip (diff8 and flags, ~27 000) in the
   same frame as a sprite pattern table move (34 500). Hardware: pending.
+
+### Frame skipping and the settings page (F10)
+
+- The VRTC handler draws the picture (`render_step`, `sprite_step`) only
+  in some frames (`draw_this`); the keyboard, the frame flag, the sprite
+  flags and the Z80's interrupt are every frame, so a game keeps its
+  speed and gets the drawing time of the frames skipped. `sprite_step`
+  still runs in a skipped frame when the sprite set-up changed (R1, R5,
+  R6): the flags need the current tables. Modes: AUTO (the default) skips
+  a frame when the game is late, i.e. the frame flag is still set with
+  R1's IE on (the Z80 has not taken the last frame's interrupt), at most
+  two in a row; EVERY FRAME; 1/2; 1/3. pc88va-galaga's DRAW AUTO runs the
+  render as a thread in the idle time instead; here the render is part of
+  the VRTC handler, so skipping it is the simple form.
+- F10 (port 0Dh bit 4, or 0Ch bit 4 as vaeg has it, as in pc88va-galaga)
+  opens a settings page and pauses the MSX inside the VRTC handler: SSG
+  levels 0, the sprite descriptors off, the gaiji cells blank, the page
+  in GVRAM with the MSX ROM's font (CGTABL, word 0004h of the main ROM),
+  a VRTC waited for on port 40h bit 5. Items: Draw (the modes above) and
+  Gaiji cells (on/off, only with GAIJI.BAK); it shows the game frames
+  (interrupts taken) and the pictures drawn in the last second. F10 again
+  clears GVRAM and redraws in full. The settings sit before `vars`, so an
+  MSX reset keeps them. `--define TEST_KEYS`: M also acts as F10 (vaeg's
+  `@hold` cannot hold F10; its inputs count from frame 600).
+- vaeg, 2026-10-22, VA2: the page opens, changes and closes in play
+  (Bosconian, Star Force); 1/2 shows 60 game frames and 30 pictures a
+  second; Gaiji cells off switches Bosconian to GVRAM tiles; six titles
+  look as before with C-BIOS and an MSX BIOS. In vaeg these games are
+  never late, so AUTO draws every frame there; whether it helps on the VA
+  is for the hardware.
 
 ## Disks (MS-DOS 4.0)
 

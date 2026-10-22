@@ -62,6 +62,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cbios  # noqa: E402
+import msxbios  # noqa: E402
 import dosdisk  # noqa: E402
 import get_games  # noqa: E402
 
@@ -78,7 +79,9 @@ def payload(defines: list[str]) -> bytes:
 
 
 def patch_table() -> str:
-    """offset (dw), length (db), the old bytes, the new bytes; FFFFh ends."""
+    """C-BIOS's table (patches: offset (dw), length (db), the old bytes, the
+    new bytes; FFFFh ends) and an MSX BIOS's (msx_sha1: its SHA-1 as five
+    dwords; msx_patches: the offsets of CALLN 71h; FFFFh ends)."""
     items = []
     for offset, old, new, _ in cbios.PATCHES:
         old_b, new_b = bytes.fromhex(old), bytes.fromhex(new)
@@ -86,7 +89,12 @@ def patch_table() -> str:
             raise SystemExit("error: a C-BIOS patch changes the length")
         items.append(f"dw {offset:#06x}\n\t\tdb {len(old_b)}, "
                      + ", ".join(f"{b:#04x}" for b in old_b + new_b))
-    return "patches:\t" + "\n\t\t".join(items) + "\n\t\tdw 0ffffh\n"
+    text = "patches:\t" + "\n\t\t".join(items) + "\n\t\tdw 0ffffh\n"
+    words = [msxbios.SHA1[i:i + 8] for i in range(0, 40, 8)]
+    text += "msx_sha1:\tdd " + ", ".join(f"0{w}h" for w in words) + "\n"
+    text += ("msx_patches:\tdw " + ", ".join(f"{o:#06x}" for o, _ in msxbios.PATCHES)
+             + ", 0ffffh\n")
+    return text
 
 
 def dos_name(path: Path) -> str:
