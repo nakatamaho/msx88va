@@ -133,6 +133,7 @@ start:		cli
 		call	zero_init
 		call	screen_init
 		jc	fail
+		call	scr_off_ports
 		call	pcg_init
 		call	memory_init
 		call	sound_init
@@ -181,11 +182,18 @@ screen_init:	mov	ax,1702h		; clear the text screen
 		cmp	dx,000ah
 		jae	.cpu
 		add	dx,000ah		; GVRAM-relative: GVRAM is at A0000h
-.cpu:		mov	bx,ax			; paragraph of the frame buffer
+.cpu:		mov	[ring_lo],ax		; the scroll ring: 64 KiB on, in
+		mov	cx,dx			; GVRAM-relative bytes
+		sub	cx,000ah - 1
+		mov	[ring_hi],cx
+		mov	bx,ax			; paragraph of the frame buffer
 		shr	bx,4
 		shl	dx,12
 		or	bx,dx
 		mov	[gvram_seg],bx
+		add	bx,1000h
+		mov	[ring_seg],bx
+		sub	bx,1000h
 		cli
 		mov	dx,0153h		; system memory area: GVRAM
 		in	al,dx
@@ -404,6 +412,7 @@ restart:	push	bp
 		pop	ds
 		pop	es
 		call	zero_init
+		call	scr_off_ports
 		call	pcg_blank
 		pop	ax
 		mov	[gvram_seg],ax
@@ -447,6 +456,32 @@ dump_vram:	push	ds
 		mov	al,[f_hit]		; C00Ah: the sprite flags computed
 		stosb
 		mov	al,[f_five]
+		stosb
+		mov	al,[scr_on]		; C00Ch: the scroll ring's state
+		stosb
+		mov	al,[scr_b]
+		stosb
+		mov	al,[scr_phase]
+		stosb
+		mov	al,[scr_n]
+		stosb
+		mov	al,[pass_on]		; C010h: a pass under way
+		stosb
+		mov	al,[scr_wait]		; C011h: frames waited
+		stosb
+		mov	al,[vwrite]		; C012h: VRAM written since
+		stosb
+		push	ds			; C013h: rows written, not yet drawn
+		push	cs
+		pop	ds
+		mov	si,row_dirty
+		mov	cx,24
+		xor	ah,ah
+.rows:		lodsb
+		add	ah,al
+		loop	.rows
+		pop	ds
+		mov	al,ah
 		stosb
 		ret
 
@@ -769,9 +804,11 @@ z80_follow:
 %ifdef TEST_NOFOLLOW				; tests: every I/O trapped alone
 		ret
 %endif
+		cmp	byte [follow_on],0	; off on the settings page
+		je	.off
 		cmp	word [bp + 4],Z80SEG
 		je	.z80
-		ret
+.off:		ret
 .z80:		push	es
 		push	di
 		mov	ax,Z80SEG
@@ -779,6 +816,9 @@ z80_follow:
 		mov	si,[bp + 2]
 		mov	byte [zf_left],FOLLOW_MAX
 		mov	word [zf_all],256	; and at most this many in all
+		lea	ax,[si - 2]		; (the I/O instruction, about)
+		call	zf_worth
+		jc	.stop
 .next:		dec	word [zf_all]
 		jz	.stop
 		dec	byte [zf_left]
@@ -1187,13 +1227,12 @@ zf_out:		mov	ah,[es:si + 1]		; OUT (n),A
 		call	port_out
 		pop	si
 		add	si,2
-		mov	byte [zf_left],FOLLOW_MAX
 		cmp	byte [es:si - 1],98h
-		jne	ZN
+		jne	zf_io_done
 		mov	[bp + 2],si		; a known loop, as after a trap
 		call	out_loop
 		mov	si,[bp + 2]
-		jmp	ZN
+		jmp	zf_io_done
 zf_in:		mov	ah,[es:si + 1]		; IN A,(n)
 		call	zf_port
 		jc	ZS
@@ -1202,8 +1241,7 @@ zf_in:		mov	ah,[es:si + 1]		; IN A,(n)
 		pop	si
 		mov	[bp + T_A],al
 		add	si,2
-		mov	byte [zf_left],FOLLOW_MAX
-		jmp	ZN
+		jmp	zf_io_done
 zf_ed:		cmp	byte [es:si + 1],0a3h	; OUTI
 		jne	ZS
 		mov	ah,cl			; port C
@@ -1221,8 +1259,96 @@ zf_ed:		cmp	byte [es:si + 1],0a3h	; OUTI
 		jnz	.nz
 		or	byte [bp + 6],40h
 .nz:		add	si,2
-		mov	byte [zf_left],FOLLOW_MAX
+		jmp	zf_io_done
+; After an I/O instruction: on only when more I/O is likely near.
+zf_io_done:	mov	byte [zf_left],FOLLOW_MAX
+		lea	ax,[si - 2]
+		call	zf_worth
+		jc	ZS
 		jmp	ZN
+
+; Interpreting costs several times what the uPD9002 takes to run an
+; instruction, a trap many times that: go on after an I/O instruction at
+; AX only when the bytes from SI (to ZF_SCAN of them, and as many from a
+; RET's return address) hold an I/O opcode with a trapped port (D3h/DBh n,
+; EDh A2h-BBh), or a jump or DJNZ back to at most 64 bytes before AX (a
+; loop around it). A guess from the bytes, not decoded instructions.
+; CF = 1: stop. ES = Z80SEG; keeps every register but AX.
+ZF_SCAN		equ	24
+
+zf_worth:
+%ifdef TEST_FOLLOWALL				; tests (tools/follow_cart.py):
+		clc				; interpret whatever follows
+		ret
+%endif
+		push	bx
+		push	cx
+		push	si
+		mov	bx,ax			; BX: the I/O instruction
+		mov	cx,ZF_SCAN
+		mov	byte [zf_wret],0
+.b:		mov	al,[es:si]
+		cmp	al,0d3h
+		je	.port
+		cmp	al,0dbh
+		je	.port
+		cmp	al,0edh
+		je	.ed
+		cmp	al,10h			; DJNZ, JR, JR cc: back over BX?
+		je	.rel
+		cmp	al,18h
+		je	.rel
+		and	al,0e7h
+		cmp	al,20h
+		je	.rel
+		mov	al,[es:si]
+		cmp	al,0c3h			; JP, JP cc
+		je	.abs
+		and	al,0c7h
+		cmp	al,0c2h
+		je	.abs
+		cmp	byte [es:si],0c9h	; RET: on at the return address
+		jne	.n
+		cmp	byte [zf_wret],0
+		jne	.n
+		mov	byte [zf_wret],1
+		push	bx
+		mov	bx,[bp]
+		mov	si,[es:bx]
+		pop	bx
+		mov	cx,ZF_SCAN
+		jmp	.b
+.n:		inc	si
+		loop	.b
+		stc
+		jmp	.ret
+.port:		mov	ah,[es:si + 1]
+		call	zf_port
+		jc	.n
+		jmp	.yes
+.ed:		mov	al,[es:si + 1]
+		cmp	al,0a2h
+		jb	.n
+		cmp	al,0bbh
+		ja	.n
+		jmp	.yes
+.rel:		mov	al,[es:si + 1]		; the target
+		cbw
+		add	ax,si
+		add	ax,2
+		jmp	.back
+.abs:		mov	ax,[es:si + 1]
+.back:		cmp	ax,bx			; at or before the I/O, at most 64
+		ja	.n			; bytes before it
+		add	ax,64
+		cmp	ax,bx
+		jb	.n
+.yes:		clc
+.ret:		pop	si
+		pop	cx
+		pop	bx
+		ret
+
 ; CF = 1 unless port AH is in the trap's ranges.
 zf_port:	cmp	ah,90h
 		jb	.no
@@ -2567,8 +2693,14 @@ render_step:	cmp	byte [pass_on],0
 		cmp	byte [vregchg],0
 		jne	.start
 		cmp	byte [vwrite],0
+		jne	.written
+		cmp	byte [scr_wait],0	; quiet after a deferred rewrite
 		je	.ret
-.start:		call	pass_start
+		jmp	.start
+.written:	call	scr_defer		; CF: wait for a quiet frame
+		jc	.ret
+.start:		mov	byte [scr_wait],0
+		call	pass_start
 .go:		mov	word [budget],MAX_TILES * 2	; half cells: a cell from the
 		cmp	word [render_fn],loop_pcg
 		je	.text
@@ -2620,12 +2752,17 @@ pass_start:	mov	byte [vwrite],0
 		mov	[any_pend],al
 		mov	[pend_set],al
 		mov	byte [any_dirty],0
+		call	scr_check		; a scroll by a row: the hardware's
 		xor	ax,ax
 		mov	[rpos],ax
 		mov	[rrow],al
 		mov	[rcol],al
-		mov	ax,[r_start]
-		mov	[rdest],ax
+		push	es
+		mov	dh,0
+		call	row_at
+		mov	[rdest],di
+		mov	[rseg],es
+		pop	es
 		mov	byte [pass_on],1
 		call	make_merged
 		mov	byte [flipped],0
@@ -2806,6 +2943,7 @@ render_flip:	push	es
 		mov	byte [flipped],1
 		ret
 .full:		mov	byte [rfull],1
+		call	scr_off			; the layout as at the start
 		mov	ax,[render_fn]		; every glyph again unless the
 		cmp	ax,[old_setup]		; gaiji cells stay on the same
 		jne	.glyphs			; patterns (a backdrop change)
@@ -2894,21 +3032,320 @@ diff:		jcxz	.ret
 		pop	ds
 .ret:		ret
 
-; The 256x192 picture in the backdrop colour.
-clear_picture:	mov	es,[gvram_seg]
-		mov	di,PICTURE_Y * STRIDE + GFX_X
-		mov	al,[backdrop]
+; The 256x192 picture in the backdrop colour (and the ring, scrolling).
+clear_picture:	mov	al,[backdrop]
 		mov	ah,al
 		shl	ah,4
 		or	al,ah
 		mov	ah,al
+		cmp	byte [scr_on],0
+		je	.fb0
+		mov	es,[ring_seg]
+		mov	di,GFX_X
+		mov	dl,[scr_n]
+		xor	dh,dh
+		shl	dx,3
+		call	.fill
+.fb0:		mov	es,[gvram_seg]
+		mov	di,PICTURE_Y * STRIDE + GFX_X
 		mov	dx,192
-.l:		mov	cx,128 / 2
+.fill:		mov	cx,128 / 2		; DX lines of the picture's width
 		rep	stosw
 		add	di,STRIDE - 128
 		dec	dx
-		jnz	.l
+		jnz	.fill
 		ret
+
+; ---------------------------------------------------------------------------
+; Scrolling by a row with the hardware (docs/DESIGN.md "M05"). A game that
+; scrolls by rewriting its name table a row down (Star Force) changes most
+; cells of the picture at every step. When a pass finds rows b + 1 .. 23
+; holding what rows b .. 22 showed, the rows b .. 23 are shown from a ring
+; in GVRAM (frame buffer 2, sub-screen 2, wrapped vertically: manual
+; 4.5.5) whose start moves up a row: only row b, and in Graphics II rows
+; that crossed into another third (8, 16), are drawn again. Rows 0 .. b - 1
+; stay in frame buffer 0 (sub-screen 0). Graphics I and II in GVRAM only
+; (not the gaiji cells); off on the settings page (scr_allow) and at a
+; full redraw. A rewrite of many rows is taken when a frame passes
+; without VRAM writes (at most SCR_WAIT frames late), so that the check
+; sees the whole step.
+
+SCR_WAIT	equ	4
+SCR_ROWS	equ	12		; rows written: perhaps a scroll
+
+; ES:DI = the start of picture row DH (cell 0, line 0) for the cell loop.
+; Keeps every register but ES, DI.
+row_at:		push	ax
+		cmp	byte [cs:scr_on],0
+		je	.fb0
+		mov	al,dh
+		sub	al,[cs:scr_b]
+		jb	.fb0
+		add	al,[cs:scr_phase]	; ring row (dh - b + phase) mod n
+		cmp	al,[cs:scr_n]
+		jb	.r
+		sub	al,[cs:scr_n]
+.r:		xor	ah,ah
+		imul	di,ax,8 * STRIDE
+		add	di,GFX_X
+		mov	es,[cs:ring_seg]
+		pop	ax
+		ret
+.fb0:		mov	al,dh
+		xor	ah,ah
+		imul	di,ax,8 * STRIDE
+		add	di,[cs:r_start]
+		mov	es,[cs:gvram_seg]
+		pop	ax
+		ret
+
+; render_step after VRAM writes, no pass running: CF = 1 to wait one more
+; frame (a rewrite of SCR_ROWS rows or more in Graphics I/II, still going
+; on). DS = CS.
+scr_defer:	cmp	byte [scr_allow],0
+		je	.go
+		mov	ax,[render_fn]
+		cmp	ax,loop_g1
+		je	.mode
+		cmp	ax,loop_g2
+		jne	.go
+.mode:		mov	si,row_dirty
+		mov	cx,24
+		xor	ah,ah
+.c:		lodsb
+		add	ah,al
+		loop	.c
+		cmp	ah,SCR_ROWS
+		jb	.go
+		cmp	byte [scr_wait],SCR_WAIT
+		jae	.go
+		inc	byte [scr_wait]
+		mov	byte [vwrite],0
+		stc
+		ret
+.go:		clc
+		ret
+
+; At a pass start (the flags copied, before make_merged): a scroll down
+; by a row of rows b .. 23? Then the ring moves, or is set up (a full
+; redraw). Uses AX, BX, CX, DX, SI, DI. DS = CS.
+scr_check:	cmp	byte [scr_allow],0
+		je	.ret
+		cmp	byte [rfull],0
+		jne	.ret
+		mov	ax,[render_fn]
+		cmp	ax,loop_g1
+		je	.mode
+		cmp	ax,loop_g2
+		jne	.ret
+.mode:		mov	si,row_pend		; enough rows written?
+		mov	cx,24
+		xor	ah,ah
+.c:		lodsb
+		add	ah,al
+		loop	.c
+		cmp	ah,SCR_ROWS
+		jb	.ret
+		push	es
+		mov	ax,VRAMSEG
+		mov	es,ax
+		mov	dl,23			; DL: from the bottom up, while the
+.row:		mov	al,dl			; row holds the row above's shadow
+		call	.match			; (28 of 32 cells)
+		jb	.top
+		dec	dl
+		jnz	.row
+.top:		pop	es
+		inc	dl			; DL: the lowest row that matched
+		cmp	dl,20			; at least four rows
+		ja	.ret
+		dec	dl			; DL: b, the band's new top row
+		cmp	byte [scr_on],0
+		je	.setup
+		cmp	dl,[scr_b]
+		jb	.setup			; a wider band: set up again
+		ja	.ret			; a part of one (the rewrite not
+						; finished): drawn as it is
+		dec	byte [scr_phase]	; the ring a row up: row r shows
+		jns	.shadow			; what row r - 1 showed
+		mov	al,[scr_n]
+		dec	al
+		mov	[scr_phase],al
+.shadow:	mov	al,23			; shadow rows b .. 22 -> b + 1 .. 23
+.sh:		cmp	al,dl
+		jbe	.new
+		mov	ah,al
+		mov	bl,al
+		dec	bl
+		call	.copy_row
+		dec	al
+		jmp	.sh
+.new:		mov	al,dl			; row b: draw it
+		call	.stale
+		cmp	word [render_fn],loop_g2
+		jne	.moved
+		mov	al,8			; graphics II: rows that came into
+		cmp	al,dl			; another third
+		jbe	.r16
+		call	.stale
+.r16:		mov	al,16
+		cmp	al,dl
+		jbe	.moved
+		call	.stale
+.moved:		inc	word [scr_steps]
+		jmp	scr_ports
+.setup:		mov	[scr_b],dl		; the ring for rows b .. 23
+		mov	al,24
+		sub	al,dl
+		mov	[scr_n],al
+		mov	byte [scr_phase],0
+		mov	byte [scr_on],1
+		mov	byte [rfull],1		; drawn again in full
+		jmp	scr_ports
+.ret:		ret
+; CF = 1 (JB) unless at least 28 cells of row AL hold the names the
+; shadow has for row AL - 1. ES = VRAMSEG. Keeps DX.
+.match:		xor	ah,ah
+		shl	ax,5
+		mov	si,ax
+		add	si,[r_name]
+		lea	di,[shadow - 32]
+		add	di,ax			; the shadow of the row above
+		push	si			; all 32 equal (the usual case):
+		push	di			; REPE CMPSW
+		push	ds
+		push	es
+		push	es
+		push	cs
+		pop	es
+		pop	ds
+		mov	cx,16
+		repe	cmpsw
+		pop	es
+		pop	ds
+		pop	di
+		pop	si
+		jne	.count
+		clc
+		ret
+.count:		mov	cx,32
+		xor	bx,bx
+.m:		mov	al,[es:si]
+		cmp	al,[di]
+		jne	.mn
+		inc	bx
+.mn:		inc	si
+		inc	di
+		loop	.m
+		cmp	bx,28
+		ret
+; Shadow row AH = shadow row BL. Keeps AX, DX.
+.copy_row:	push	ax
+		push	es
+		push	cs
+		pop	es
+		mov	al,ah
+		xor	ah,ah
+		shl	ax,5
+		mov	di,ax
+		add	di,shadow
+		xor	bh,bh
+		shl	bx,5
+		lea	si,[shadow + bx]
+		mov	cx,16
+		rep	movsw
+		pop	es
+		pop	ax
+		ret
+; Row AL drawn at the pass: its shadow made unlike every name, its row
+; flagged. Keeps AX, DX.
+.stale:		push	ax
+		push	es
+		mov	bl,al
+		xor	bh,bh
+		mov	byte [row_pend + bx],1
+		xor	ah,ah
+		shl	ax,5
+		mov	si,ax
+		add	si,[r_name]
+		mov	di,ax
+		add	di,shadow
+		mov	cx,32
+		mov	ax,VRAMSEG
+		mov	es,ax
+.s:		mov	al,[es:si]
+		not	al
+		mov	[di],al
+		inc	si
+		inc	di
+		loop	.s
+		pop	es
+		pop	ax
+		ret
+
+; Frame buffers 0 and 2 for scr_on (word writes: a byte write to a DSA can
+; hang the hardware, pc88va-galaga). In the VRTC handler. Uses AX, DX.
+scr_ports:	cmp	byte [scr_on],0
+		je	scr_off_ports
+		mov	al,[scr_b]		; FB0: lines 0 .. PICTURE_Y + 8b - 1
+		xor	ah,ah
+		shl	ax,3
+		add	ax,PICTURE_Y
+		push	ax
+		mov	dx,0212h		; DSH
+		out	dx,ax
+		mov	ax,[ring_lo]		; FB2: the ring
+		mov	dx,0240h		; FSA
+		out	dx,ax
+		mov	ax,[ring_hi]
+		mov	dx,0242h
+		out	dx,ax
+		mov	ax,STRIDE		; FBW
+		mov	dx,0244h
+		out	dx,ax
+		mov	al,[scr_n]
+		xor	ah,ah
+		shl	ax,3
+		push	ax
+		dec	ax
+		mov	dx,0246h		; FBL: lines - 1
+		out	dx,ax
+		xor	ax,ax			; OFX
+		mov	dx,0248h
+		out	dx,ax
+		mov	al,[scr_phase]		; OFY: phase * 8
+		xor	ah,ah
+		shl	ax,3
+		mov	dx,024ch
+		out	dx,ax
+		imul	ax,ax,STRIDE		; DSA: FSA + OFY * FBW
+		xor	dx,dx
+		add	ax,[ring_lo]
+		adc	dx,[ring_hi]
+		push	dx
+		mov	dx,024eh
+		out	dx,ax
+		pop	ax
+		mov	dx,0250h
+		out	dx,ax
+		pop	ax			; DSH: the ring's lines
+		mov	dx,0252h
+		out	dx,ax
+		pop	ax			; DSP: below sub-screen 0
+		mov	dx,0256h
+		out	dx,ax
+		ret
+scr_off_ports:	mov	ax,200			; FB0 over the screen, FB2 off
+		mov	dx,0212h
+		out	dx,ax
+		xor	ax,ax
+		mov	dx,0252h
+		out	dx,ax
+		ret
+
+; Scrolling off (a full redraw, the settings page, an MSX reset).
+scr_off:	mov	byte [scr_on],0
+		jmp	scr_off_ports
 
 ; From the registers: the cell loop, the tables and their sizes for
 ; mark_addr, the colour pairs.
@@ -3029,7 +3466,7 @@ loop_blank:	mov	byte [pass_on],0
 ; the next frame (rpos: the cell, rrow, rcol, rdest: the row's start).
 ; DS = CS on entry.
 %macro CELL_LOOP 4
-		mov	es,[gvram_seg]
+		mov	es,[rseg]
 		push	bp
 		push	ds
 		mov	si,[rpos]
@@ -3054,8 +3491,8 @@ loop_blank:	mov	byte [pass_on],0
 		cmp	byte [cs:row_pend + bx],0
 		jne	%%scan
 		add	si,%1
-		add	di,8 * STRIDE
 		inc	dh
+		call	row_at
 		jmp	%%row
 %%scan:		mov	cl,%1			; CX: the cells left in the row
 		sub	cl,dl
@@ -3081,7 +3518,7 @@ loop_blank:	mov	byte [pass_on],0
 		sub	si,[cs:r_name]		; the row done
 		mov	dl,0
 		inc	dh
-		add	di,8 * STRIDE
+		call	row_at
 		jmp	%%row
 %%hit_again:	mov	al,[si - 1]
 %%hit:		mov	[cs:bp + si - 1],al	; the shadow
@@ -3114,7 +3551,7 @@ loop_blank:	mov	byte [pass_on],0
 		sub	si,[cs:r_name]		; the row done
 		mov	dl,0
 		inc	dh
-		add	di,8 * STRIDE
+		call	row_at
 		jmp	%%row
 %%full:		dec	cx			; drawn enough: stop after this cell
 		mov	dl,%1
@@ -3124,9 +3561,10 @@ loop_blank:	mov	byte [pass_on],0
 		jb	%%save
 		mov	dl,0
 		inc	dh
-		add	di,8 * STRIDE
+		call	row_at
 %%save:		mov	[cs:rpos],si
 		mov	[cs:rdest],di
+		mov	[cs:rseg],es
 		mov	[cs:rcol],dl
 		mov	[cs:rrow],dh
 		pop	ds
@@ -4422,6 +4860,11 @@ stats_tick:	inc	byte [st_count]
 		mov	ax,[st_drawn]
 		mov	[st_draws],ax
 		mov	word [st_drawn],0
+		mov	ax,[traps]
+		mov	bx,ax
+		sub	ax,[st_trap0]
+		mov	[st_traps],ax
+		mov	[st_trap0],bx
 .ret:		ret
 
 ; ---------------------------------------------------------------------------
@@ -4434,7 +4877,7 @@ stats_tick:	inc	byte [st_count]
 ; picture is drawn again in full. draw_mode and pcg_on are before vars: an
 ; MSX reset keeps them. DS = CS.
 
-SVC_ITEMS	equ	2
+SVC_ITEMS	equ	4
 
 settings_check:	call	f10_edge
 		jc	settings
@@ -4474,6 +4917,7 @@ settings:	push	es
 		jb	.mute
 		call	sprites_hide
 		call	pcg_blank
+		call	scr_off			; the page in frame buffer 0
 		mov	byte [svc_keys],0fh	; keys held now act after a release
 .page:		call	settings_draw
 .wait:		call	wait_vrtc
@@ -4483,16 +4927,25 @@ settings:	push	es
 		call	svc_keys_new		; AL: up 1, down 2, left 4, right 8
 		test	al,1
 		jz	.down
-		xor	byte [svc_item],1	; (two items)
+		dec	byte [svc_item]
+		jns	.page
+		mov	byte [svc_item],SVC_ITEMS - 1
 		jmp	.page
 .down:		test	al,2
 		jz	.change
-		xor	byte [svc_item],1
+		inc	byte [svc_item]
+		cmp	byte [svc_item],SVC_ITEMS
+		jb	.page
+		mov	byte [svc_item],0
 		jmp	.page
 .change:	and	al,0ch
 		jz	.wait
-		cmp	byte [svc_item],0
-		jne	.gaiji
+		cmp	byte [svc_item],1
+		je	.gaiji
+		cmp	byte [svc_item],2
+		je	.follow
+		cmp	byte [svc_item],3
+		je	.scroll
 		test	al,4			; draw mode: left back, right on
 		jz	.right
 		dec	byte [draw_mode]
@@ -4506,6 +4959,10 @@ settings:	push	es
 		je	.wait			; gaiji RAM
 		xor	byte [pcg_on],1
 		mov	byte [vregchg],1	; render_setup picks the loop
+		jmp	.page
+.follow:	xor	byte [follow_on],1
+		jmp	.page
+.scroll:	xor	byte [scr_allow],1
 		jmp	.page
 .close:		mov	es,[gvram_seg]		; the picture again, in full
 		xor	di,di
@@ -4603,29 +5060,42 @@ settings_draw:	mov	es,[gvram_seg]
 		xor	bh,bh
 		shl	bx,1
 		mov	si,[draw_names + bx]
-		mov	cx,(5 << 8) | 18
+		mov	cx,(4 << 8) | 18
 		mov	dl,15
 		call	text
 		mov	si,s_on			; gaiji cells
 		cmp	byte [pcg_on],0
 		jne	.g
 		mov	si,s_off
-.g:		mov	cx,(7 << 8) | 18
+.g:		mov	cx,(6 << 8) | 18
+		call	text
+		mov	si,s_on			; I/O follow
+		cmp	byte [follow_on],0
+		jne	.f
+		mov	si,s_off
+.f:		mov	cx,(8 << 8) | 18
+		call	text
+		mov	si,s_on			; HW scroll
+		cmp	byte [scr_allow],0
+		jne	.s
+		mov	si,s_off
+.s:		mov	cx,(9 << 8) | 18
 		call	text
 		cmp	byte [pcg_ok],0
 		jne	.counts
 		mov	si,s_no_bak
-		mov	cx,(8 << 8) | 4
+		mov	cx,(6 << 8) | 22
 		mov	dl,14
 		call	text
-		mov	cx,(9 << 8) | 4
-		call	text			; (the next string)
 .counts:	mov	ax,[st_games]
 		mov	cx,(11 << 8) | 4
 		call	number
 		mov	ax,[st_draws]
-		mov	cx,(12 << 8) | 4
-		call	number
+		mov	cx,(12 << 8) | 2
+		call	number5
+		mov	ax,[st_traps]
+		mov	cx,(13 << 8) | 2
+		call	number5
 		ret
 
 ; Texts from SI: column, row, colour, characters, 0; FFh ends.
@@ -4670,6 +5140,10 @@ number:		mov	dl,15
 		jnz	.d
 		ret
 
+; AX (0-65535) right-aligned in five columns from CL, row CH, colour 15.
+number5:	add	cl,2
+		jmp	number
+
 ; Character AL at column CL (0-39), row CH (0-24), colour DL on black,
 ; from the MSX ROM's font. ES = GVRAM. Keeps every register.
 putc_g:		pusha
@@ -4706,7 +5180,7 @@ putc_g:		pusha
 		popa
 		ret
 
-svc_rows	db	5, 7
+svc_rows	db	4, 6, 8, 9
 draw_names	dw	s_auto, s_every, s_half, s_third
 draw_skips	db	2, 0, 1, 2		; most frames skipped in a row
 s_auto		db	'AUTO       ', 0
@@ -4715,13 +5189,15 @@ s_half		db	'1/2        ', 0
 s_third		db	'1/3        ', 0
 s_on		db	'ON ', 0
 s_off		db	'OFF', 0
-s_no_bak	db	'(no GAIJI.BAK: MSX /N or a', 0
-		db	'protected disk)', 0
-svc_texts	db	4, 2, 15, 'msx88va settings', 0
-		db	4, 5, 15, 'Draw', 0
-		db	4, 7, 15, 'Gaiji cells', 0
+s_no_bak	db	'(no GAIJI.BAK)', 0
+svc_texts	db	4, 1, 15, 'msx88va settings', 0
+		db	4, 4, 15, 'Draw', 0
+		db	4, 6, 15, 'Gaiji cells', 0
+		db	4, 8, 15, 'I/O follow', 0
+		db	4, 9, 15, 'HW scroll', 0
 		db	8, 11, 14, 'game frames in the last second', 0
 		db	8, 12, 14, 'pictures drawn', 0
+		db	8, 13, 14, 'I/O traps', 0
 		db	4, 15, 14, 'AUTO skips drawing a frame when', 0
 		db	4, 16, 14, 'the game is late (at most 2).', 0
 		db	4, 19, 14, 'Up/down: item  left/right: change', 0
@@ -4729,6 +5205,12 @@ svc_texts	db	4, 2, 15, 'msx88va settings', 0
 		db	0ffh
 
 draw_mode	db	0			; 0 AUTO, 1 every frame, 2 1/2, 3 1/3
+follow_on	db	1			; z80_follow on
+scr_allow	db	1			; scrolling by frame buffer 2
+		align	2
+ring_seg	dw	0			; the scroll ring (screen_init)
+ring_lo		dw	0			; its GVRAM-relative address
+ring_hi		dw	0
 svc_item	db	0
 
 ; ---------------------------------------------------------------------------
@@ -4989,6 +5471,15 @@ flipped		db	0			; render_flip moved a table
 glyphs_all	db	1			; pcg_glyphs: every pattern
 pend_set	db	1			; a pattern or colour flag pending
 zf_left		db	0			; z80_follow
+scr_on		db	0			; rows scr_b .. 23 in the ring
+scr_b		db	0
+scr_n		db	0			; its rows: 24 - scr_b
+scr_phase	db	0			; the ring row of picture row scr_b
+scr_wait	db	0			; frames a rewrite was waited for
+		align	2
+scr_steps	dw	0			; scrolls done by the hardware
+rseg		dw	0			; the cell loop's segment (rdest)
+zf_wret		db	0			; zf_worth: a RET followed
 		align	2
 zf_all		dw	0
 zf_pc		dw	0
@@ -5001,6 +5492,8 @@ st_drawn	dw	0			; pictures in this second
 st_inj0		dw	0			; injected at its start
 st_games	dw	0			; the last second's game frames
 st_draws	dw	0			; and pictures
+st_trap0	dw	0			; traps at the second's start
+st_traps	dw	0			; and in the last second
 pcg_cols	db	0			; loop_pcg: a colour pending
 g2_colour	db	0			; tile_g2: the line above's colours
 psg_reg		db	0

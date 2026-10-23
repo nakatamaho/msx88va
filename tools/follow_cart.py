@@ -33,10 +33,12 @@ E107h) set, BC, DE, HL set, OUT (A0h),A (the trap that starts
 z80_follow), the snippet, then natively the SP, the registers, scratch
 and stack into a 48-byte result at 8000h + 48 * n; at the end the
 results go to VRAM 0000h and the snippets' VRAM writes are at 3000h-
-34FFh. Build the private disk twice with --define DUMP_VRAM, once also
-with --define TEST_NOFOLLOW (every I/O instruction trapped alone, the
-rest run by the uPD9002), run each in vaeg for 2500 frames, capture
-GVRAM (VRAM at its 8000h) and compare: every result must be equal.
+34FFh. Build the private disk twice with --define DUMP_VRAM, once with
+--define TEST_FOLLOWALL (z80_follow interprets whatever follows, not
+only where zf_worth expects more I/O) and once with --define
+TEST_NOFOLLOW (every I/O instruction trapped alone, the rest run by the
+uPD9002), run each in vaeg for 2500 frames, capture GVRAM (VRAM at its
+8000h) and compare: every result must be equal.
 """
 
 import sys
@@ -198,7 +200,8 @@ def snippets():
         vaddr(a, 0x3400); ld_rn(a, "C", 0x98); ld16(a, "HL", 0xe000); ld_rn(a, "B", 5)
         a.db(*([0xed, 0xa3] * 5))
     @case
-    def _(a): a.db(0xfb, 0xf3)                  # EI; DI
+    def _(a): a.db(0xf3, 0x00)                  # DI; NOP (EI would open a
+                                                 # window for the VRTC natively)
     @case
     def _(a):
         for d, s_ in (("B", "A"), ("C", "B"), ("D", "C"), ("E", "D"), ("L", "E"), ("A", "L")):

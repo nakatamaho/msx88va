@@ -336,6 +336,63 @@ untested.
   3.6; z80_follow interprets up to about 260 instructions a frame. The
   19 titles look as before with both BIOSes. Terminal Run and Antarctic
   Adventure still take only about 0.8 VRTCs a frame in vaeg.
+- Why: both do their frame's work with interrupts disabled (Antarctic
+  Adventure in its interrupt handler, the main program `EI; JR $`;
+  Terminal Run between HALTs); a frame whose work takes more than one
+  frame loses the next VRTC (gaps of exactly two frames). Antarctic
+  Adventure's handler in vaeg (VA model, 40 times from frame 3000): with
+  z80_follow median 61 900 cycles, max 299 000, 3 over a frame; without
+  (be4442c) median 34 900, max 69 500, none over. z80_follow cost more
+  than it saved: an interpreted instruction takes about 120 cycles, a
+  trap's own handler about 370 (vaeg; its trap entry is cheap), and after
+  an I/O instruction with no more I/O near, up to 12 instructions were
+  interpreted for nothing (340 a frame in Antarctic Adventure).
+- `zf_worth`: z80_follow goes on after an I/O instruction only when the
+  next 24 bytes (and as many from a RET's return address) hold an I/O
+  opcode with a trapped port, or a jump or DJNZ back over the I/O
+  instruction (a loop around it); about 250 cycles. Antarctic Adventure:
+  interpreted 340 -> 134 instructions a frame, traps 17 -> 15.5.
+- The balance on the hardware is not known: HANDOVER-speed.md has a trap
+  at ~45 us in vaeg and ~190 us on the PC-88VA2, but the V30 code itself
+  may be as much slower there, which would make interpreting no better.
+  So the F10 page has "I/O follow" ON/OFF (follow_on, kept over an MSX
+  reset) and shows the I/O traps of the last second, for a comparison of
+  game frames on the machine. `--define TEST_FOLLOWALL` skips zf_worth
+  (tools/follow_cart.py uses it; 188 of 188 cases equal again, the EI;
+  DI snippet replaced by DI: natively the VRTC could come in after EI).
+
+### Scrolling by a row with frame buffer 2
+
+- Graphics screen 0 has sub-screens 0, 2 and 3 from the top, each with
+  its own frame buffer (manual 4.5.5; ports 200h + 20h * n: FSA +00h/02h,
+  FBW +04h, FBL +06h (lines - 1), OFY +0Ch, DSA +0Eh/10h, DSH +12h, DSP
+  +16h), and wraps vertically within FBL. vaeg models the chain 0 -> 2
+  -> 3 by DSP and DSH (vram/makegrphva.c).
+- Star Force scrolls by writing its name table a row down (rows 1-23,
+  row 0 the score), about 540 names over a few frames. A pass start that
+  finds rows b + 1 .. 23 holding (28 of 32 cells) what the shadow had for
+  rows b .. 22 shows rows b .. 23 from a ring (ring_seg: 64 KiB above
+  the frame buffer, 8 * (24 - b) lines) through frame buffer 2 at DSP
+  PICTURE_Y + 8b, frame buffer 0 cut to DSH PICTURE_Y + 8b, and moves the
+  ring a row up (OFY and DSA, word writes): the shadow rows move with it
+  and only row b (new) and, in Graphics II, rows 8 and 16 (now in another
+  third) are drawn. `row_at` gives the cell loop each row's segment and
+  address; clear_picture clears the ring too. The first scroll sets the
+  ring up (a full redraw); a band that starts lower than the ring's (a
+  rewrite caught half done) is drawn as usual, not set up again. A
+  rewrite of 12 rows or more waits for a frame without VRAM writes (at
+  most 4) so that the check sees the whole step. Off on a full redraw,
+  the settings page (which is drawn in frame buffer 0) and an MSX reset;
+  F10 "HW scroll" switches it off (scr_allow).
+- vaeg (VA model, Star Force, play): the shown picture (frame buffer 0
+  rows < b, the ring for the others) against the picture computed from
+  the VRAM dump (DUMP_VRAM also stores the ring's state at C00Ch-C013h),
+  40 frames: equal in every frame without a pass under way or a rewrite
+  waited for; the band stays at b = 1. Graphics II cells drawn a frame
+  22.6 -> 9.0, scrolls about every 12 frames, render_step's mean and max
+  about as before (the check compares rows by REPE CMPSW first). No other
+  of the 19 titles scrolls this way (no step, no set-up). On the
+  hardware: not yet tried.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

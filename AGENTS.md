@@ -87,7 +87,8 @@ Test options for the MSX program: `--define TEST_RESET=n`, `DUMP_VRAM`,
 (M acts as F10: vaeg's `@hold` cannot hold F10), `TEST_FIRE` (SPACE and
 trigger A pressed four frames in eight, for measurements with a debug
 script, which cannot hold keys), `TEST_NOFOLLOW` (no z80_follow or I/O
-loop shortcuts: the reference for `tools/follow_cart.py`).
+loop shortcuts: the reference for `tools/follow_cart.py`),
+`TEST_FOLLOWALL` (z80_follow without zf_worth, for the same test).
 
 ## Testing in vaeg
 

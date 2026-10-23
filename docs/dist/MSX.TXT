@@ -41,6 +41,13 @@ left and right: change, F10: back to the game):
                late, at most two in a row; EVERY FRAME; 1/2; 1/3. The
                game itself runs every frame in all of them.
   Gaiji cells  ON or OFF (only when GAIJI.BAK was written)
+  I/O follow   ON (the default) runs the code after a trapped I/O
+               instruction natively up to the next one; OFF traps each.
+               Which is faster depends on the game: compare the game
+               frames shown.
+  HW scroll    ON (the default) lets a game that scrolls by whole rows
+               (Star Force) scroll with the VA's graphics hardware; OFF
+               draws every changed cell.
 
 The page also shows the game frames and the pictures drawn in the last
 second.
