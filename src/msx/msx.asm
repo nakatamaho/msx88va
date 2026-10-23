@@ -367,14 +367,10 @@ vrtc:		push	bp
 		pushf
 		or	byte [vstatus],80h	; the frame flag
 		popf
-		jc	.skipped
-		call	render_step
-		call	sprite_step
-		jmp	.flags
-.skipped:	cmp	byte [spr_all],0	; the sprite set-up must be current
-		je	.flags			; for the flags
-		call	sprite_step
-.flags:		call	sprite_flags
+		jc	.sprites		; skipped: the background only (a
+		call	render_step		; game that shows two sets of
+.sprites:	call	sprite_step		; sprites in turn must keep the
+		call	sprite_flags		; turns)
 %ifdef DUMP_VRAM				; vaeg tests: VRAM and the
 		call	dump_vram		; registers into spare GVRAM
 %endif
@@ -2552,11 +2548,14 @@ vread:		push	es
 		ret
 
 ; ---------------------------------------------------------------------------
-; PSG (AY-3-8910) on the OPN's SSG. The SSG runs at 3.9936 MHz / 4 against
-; the MSX's 1.7897725 MHz / 1: periods are scaled by 62400 / 111861
-; (36558 / 65536).
+; PSG (AY-3-8910) on the OPN's SSG. The SSG runs at half the 3.9936 MHz
+; master clock with the prescaler at 2Dh: a tone is 124800 / TP Hz (MAME's
+; ymfm, PMD's tone tables, vaeg; pc88va-galaga), the MSX's 1789772.5 / 16
+; / TP = 111861 / TP Hz: periods are scaled by 124800 / 111861 = 1 + 7581
+; / 65536, and clamped to the registers' widths (tone 12 bits, noise 5).
+; Until 2026-10-23 they were scaled by 62400 / 111861: an octave high.
 
-PERIOD_SCALE	equ	36558
+PERIOD_EXTRA	equ	7581
 
 psg_addr_w:	and	al,0fh
 		mov	[psg_reg],al
@@ -2601,13 +2600,19 @@ psg_data_w:	mov	bl,[psg_reg]
 .noise:		and	al,1fh
 		xor	ah,ah
 		call	scale
-		mov	ah,al
+		cmp	ax,1fh
+		jbe	.n
+		mov	al,1fh
+.n:		mov	ah,al
 		mov	al,6
 		jmp	opn_write
 .tone:		and	bl,6			; the pair's low register
 		mov	ax,[psg + bx]
 		and	ah,0fh
 		call	scale
+		cmp	ax,0fffh
+		jbe	.pair
+		mov	ax,0fffh
 		jmp	.pair
 .env:		mov	bl,11
 		mov	ax,[psg + bx]
@@ -2621,18 +2626,18 @@ psg_data_w:	mov	bl,[psg_reg]
 		inc	al
 		jmp	opn_write
 
-; AX = AX * PERIOD_SCALE / 65536, at least 1 if AX was not zero.
+; AX = AX + AX * PERIOD_EXTRA / 65536 (rounded), at most FFFFh.
 scale:		push	dx
 		push	cx
 		mov	cx,ax
-		mov	dx,PERIOD_SCALE
+		mov	dx,PERIOD_EXTRA
 		mul	dx
-		mov	ax,dx
-		or	ax,ax
-		jnz	.ret
-		or	cx,cx
-		jz	.ret
-		inc	ax
+		add	ax,8000h		; round
+		adc	dx,0
+		mov	ax,cx
+		add	ax,dx
+		jnc	.ret
+		mov	ax,0ffffh
 .ret:		pop	cx
 		pop	dx
 		ret
@@ -5009,10 +5014,10 @@ pair_of:	push	ax
 		ret
 
 ; ---------------------------------------------------------------------------
-; Frame skipping. The VRTC handler draws the picture (render_step,
-; sprite_step) only in some frames; the MSX's interrupt, the keyboard and
-; the sprite flags are every frame, so a game keeps its speed and gets the
-; time of the frames not drawn. draw_mode (F10): AUTO skips a frame when
+; Frame skipping. The VRTC handler draws the background (render_step)
+; only in some frames; the sprites (sprite_step), the MSX's interrupt,
+; the keyboard and the sprite flags are every frame, so a game keeps its
+; speed and gets the time of the frames not drawn. draw_mode (F10): AUTO skips a frame when
 ; the Z80 has not yet taken the last frame's interrupt (the frame flag
 ; still set with R1's IE on: the game is late), at most two in a row;
 ; EVERY FRAME never skips; 1/2 and 1/3 draw every second or third frame.

@@ -497,6 +497,25 @@ untested.
   whenever nothing was pending, as before; the sprite flags equal in all;
   tools/follow_cart.py 200 of 200. The code area grew to 28 KiB (the
   DUMP_VRAM and PROFILE builds no longer fitted 24 KiB).
+- PSG pitch (maintainer, vaeg, 2026-10-23: Star Force higher than an
+  MSX's on video). The SSG of the YM2203 at 3.9936 MHz runs at half the
+  master clock with the prescaler at 2Dh: a tone is 124800 / TP Hz
+  (MAME's ymfm, PMD's tone tables, vaeg; pc88va-galaga's DESIGN), not
+  62400 / TP as M02 assumed; the VA2's YM2608 at twice the clock divides
+  by two more (ymfm). So every PSG period was scaled by 62400 / 111861
+  and the music played an octave high. Now by 124800 / 111861 (1 + 7581
+  / 65536, rounded; tone periods clamped to 4095, noise to 31): MSX TP
+  254 (440 Hz) is written as 283 (441 Hz). The hardware's pitch is still
+  to be heard.
+- Sprite flicker (maintainer, vaeg: Dig Dug's rocks, Pookas and Fygars
+  blink, Pac-Man's and Star Force's sprites do not). The game shows two
+  sets of sprites in turn, one each frame (TVRAM's descriptors at every
+  VRTC alternate between sprites 0, 10, 12, 20-31 and 0-12, 20, 22),
+  as TMS9918 games do with more than four sprites a line; the same in
+  every M05 build from da85b69 on. On a display whose rate is not the
+  VA's the alternation can beat into a slow blink. A skipped frame left
+  the descriptors as they were, so one set stayed two frames: now only
+  the background is skipped, sprite_step runs every frame.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
