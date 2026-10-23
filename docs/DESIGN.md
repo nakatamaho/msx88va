@@ -56,13 +56,13 @@ VA2):
 ## M02: the MSX machine (`src/msx/msx.asm`)
 
 - Memory (paragraphs; M02 had a self-booting disk with BASE 2000h, now
-  MS-DOS with BASE 3000h, see "Disks"): code BASE (24 KiB since M05),
-  C-BIOS main ROM BASE+600h, logo ROM +E00h, cartridge +1200h (slot 1
-  from page 1), the Z80's 64 KiB +2200h, slot-3 RAM +3200h, VRAM +4200h,
-  the Graphics II cell images +4600h (24 KiB; until then an FFh page of
+  MS-DOS with BASE 3000h, see "Disks"): code BASE (28 KiB since M05),
+  C-BIOS main ROM BASE+700h, logo ROM +F00h, cartridge +1300h (slot 1
+  from page 1), the Z80's 64 KiB +2300h, slot-3 RAM +3300h, VRAM +4300h,
+  the Graphics II cell images +4700h (24 KiB; until then an FFh page of
   16 KiB, now an empty page is filled with FFh when selected), native
-  stack +4C00h (8 KiB), the variables' start-up copy +4E00h (1 KiB), up
-  to +4E40h = 7E40h: below 8000h, the top of the
+  stack +4D00h (8 KiB), the variables' start-up copy +4F00h (1 KiB), up
+  to +4F40h = 7F40h: below 8000h, the top of the
   PC-88VA's standard 512 KiB (vaeg's DOS reports A000h). Only the
   variables from `vars` to `vars_end` are copied for an MSX reset; the
   work areas after them (flags, shadow, colour pairs) are zeroed
@@ -482,6 +482,21 @@ untested.
   before: 16 times), about the LDIRVM rate (8.6 / 9.0 / 8.8 / 9.1);
   LD/OUT/JR 256 7.6 / 7.9 / 7.8 / 8.1 (5.9-6.1 before, measured with I/O
   follow on); the other tests as before within 1-2 %.
+- A trapped OUT (98h),A in vaeg (VA model, cycles of the handler):
+  trap entry to vdp_data_w 89, mark_addr 116, out_loop 115 (it saved all
+  registers before looking at the code), 487 in all. Now out_loop looks
+  first at the byte after the OUT (RET, or INC HL; DEC BC) and returns at
+  once otherwise (75); mark_addr checks only the tables on the written
+  byte's 256-byte page (`mark_pages`, 1 patterns, 2 colours, 4 names, 8
+  sprite patterns, 10h attributes, rebuilt by `mark_rebuild` after
+  render_setup and sprite_setup) and finds the name row by a shift but in
+  text mode (40 a write outside the tables, one check instead of five
+  inside); 366 in all. BENCH.ROM in vaeg: OUT 98 VRAM 228 -> 288 a frame,
+  WRTVRM 213 -> 245. Checked: the GVRAM picture against the VRAM dump in
+  30 frames of each of the 18 game titles (Graphics I with MSX /N), equal
+  whenever nothing was pending, as before; the sprite flags equal in all;
+  tools/follow_cart.py 200 of 200. The code area grew to 28 KiB (the
+  DUMP_VRAM and PROFILE builds no longer fitted 24 KiB).
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

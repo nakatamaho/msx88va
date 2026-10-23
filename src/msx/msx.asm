@@ -49,17 +49,17 @@
 BASE		equ	3000h		; where MSX.COM puts this program
 %endif
 
-CODE_BYTES	equ	6000h		; this program, padded
-MAIN_SEG	equ	BASE + 0600h	; C-BIOS main ROM, 32 KiB
-LOGO_SEG	equ	BASE + 0e00h	; C-BIOS logo ROM, 16 KiB
-CART_SEG	equ	BASE + 1200h	; cartridge, up to 32 KiB
-Z80SEG		equ	BASE + 2200h	; what the Z80 sees
-RAMSEG		equ	BASE + 3200h	; slot 3: 64 KiB RAM
-VRAMSEG		equ	BASE + 4200h	; 16 KiB VRAM
-CACHESEG	equ	BASE + 4600h	; 24 KiB: Graphics II cell images
-STACKSEG	equ	BASE + 4c00h	; 8 KiB native stack
+CODE_BYTES	equ	7000h		; this program, padded
+MAIN_SEG	equ	BASE + 0700h	; C-BIOS main ROM, 32 KiB
+LOGO_SEG	equ	BASE + 0f00h	; C-BIOS logo ROM, 16 KiB
+CART_SEG	equ	BASE + 1300h	; cartridge, up to 32 KiB
+Z80SEG		equ	BASE + 2300h	; what the Z80 sees
+RAMSEG		equ	BASE + 3300h	; slot 3: 64 KiB RAM
+VRAMSEG		equ	BASE + 4300h	; 16 KiB VRAM
+CACHESEG	equ	BASE + 4700h	; 24 KiB: Graphics II cell images
+STACKSEG	equ	BASE + 4d00h	; 8 KiB native stack
 STACK_TOP	equ	2000h
-SNAPSEG		equ	BASE + 4e00h	; the variables as at the first start
+SNAPSEG		equ	BASE + 4f00h	; the variables as at the first start
 SNAP_BYTES	equ	400h
 MEMORY_TOP	equ	SNAPSEG + SNAP_BYTES / 16	; paragraphs used, for MSX.COM
 
@@ -612,7 +612,21 @@ out_loop:
 		cmp	word [bp + 4],Z80SEG
 		je	.z80
 		ret
-.z80:		pusha
+.z80:		push	es			; a quick look first: RET or INC HL;
+		push	si			; DEC BC after the OUT, or nothing
+		mov	si,Z80SEG		; to do
+		mov	es,si
+		mov	si,[bp + 2]
+		cmp	byte [es:si],0c9h
+		je	.look
+		cmp	word [es:si],0b23h
+		je	.look
+		pop	si
+		pop	es
+		ret
+.look:		pop	si
+		pop	es
+		pusha
 		push	es
 		mov	ax,Z80SEG
 		mov	es,ax
@@ -2268,61 +2282,121 @@ vreg_sprites	db	00h, 53h, 00h, 00h, 00h, 7fh, 07h, 00h	; R1: also M1 (text)
 ; VRAM address BX was written: flag its pattern, colour or name row for
 ; the renderer. Keeps every register. DS = CS.
 mark_addr:	push	ax
-		push	dx
-		push	bx
+		push	si
 		mov	byte [vwrite],1
+		mov	si,bx			; the tables on this 256-byte page
+		shr	si,8			; (mark_pages): none, the usual
+		mov	al,[mark_pages + si]	; case for scratch VRAM, or only
+		or	al,al			; those checked
+		jz	.ret
+		mov	[mark_cur],al
+		test	al,01h
+		jz	.col
 		mov	ax,bx
 		sub	ax,[r_pat]
 		cmp	ax,[r_patsize]
 		jae	.col
 		shr	ax,3
-		mov	bx,ax
-		mov	byte [pat_dirty + bx],1
+		mov	si,ax
+		mov	byte [pat_dirty + si],1
 		mov	byte [any_dirty],1
-		pop	bx
-		push	bx
-.col:		mov	ax,bx
+.col:		test	byte [mark_cur],02h
+		jz	.name
+		mov	ax,bx
 		sub	ax,[r_col]
 		cmp	ax,[r_colsize]
 		jae	.name
-		push	cx
-		mov	cl,[r_colshift]
-		shr	ax,cl
-		pop	cx
-		mov	bx,ax
-		mov	byte [col_dirty + bx],1
+		cmp	byte [r_colshift],0	; 0 (graphics I) or 3 (II)
+		je	.c
+		shr	ax,3
+.c:		mov	si,ax
+		mov	byte [col_dirty + si],1
 		mov	byte [any_dirty],1
-		pop	bx
-		push	bx
-.name:		mov	ax,bx
+.name:		test	byte [mark_cur],04h
+		jz	.spt
+		mov	ax,bx
 		sub	ax,[r_name]
 		cmp	ax,[r_ncells]
 		jae	.spt
+		cmp	byte [r_cols],32	; the row: a shift but in text mode
+		jne	.div
+		shr	ax,5
+		jmp	.row
+.div:		push	dx
 		xor	dx,dx
 		div	word [r_cols]
-		mov	bx,ax
-		mov	byte [row_dirty + bx],1
-		pop	bx
-		push	bx
-.spt:		mov	ax,bx
+		pop	dx
+.row:		mov	si,ax
+		mov	byte [row_dirty + si],1
+.spt:		test	byte [mark_cur],08h
+		jz	.sat
+		mov	ax,bx
 		sub	ax,[r_spt]
 		cmp	ax,800h
 		jae	.sat
 		shr	ax,3
-		mov	bx,ax
-		mov	byte [spt_dirty + bx],1
+		mov	si,ax
+		mov	byte [spt_dirty + si],1
 		mov	word [f_dirty],0101h	; and spr_dirty
-		pop	bx
-		push	bx
-.sat:		mov	ax,bx
+.sat:		test	byte [mark_cur],10h
+		jz	.ret
+		mov	ax,bx
 		sub	ax,[r_sat]
 		cmp	ax,80h
 		jae	.ret
 		mov	word [f_dirty],0101h	; and spr_dirty
-.ret:		pop	bx
-		pop	dx
+.ret:		pop	si
 		pop	ax
 		ret
+
+; mark_pages[p]: the tables that overlap VRAM page p (256 bytes): 1
+; patterns, 2 colours, 4 names, 8 sprite patterns, 10h sprite attributes.
+; After render_setup and sprite_setup. Keeps every register.
+mark_rebuild:	pusha
+		push	es
+		push	cs
+		pop	es
+		mov	di,mark_pages
+		mov	cx,64 / 2
+		xor	ax,ax
+		rep	stosw
+		mov	si,[r_pat]
+		mov	cx,[r_patsize]
+		mov	al,01h
+		call	.mark
+		mov	si,[r_col]
+		mov	cx,[r_colsize]
+		mov	al,02h
+		call	.mark
+		mov	si,[r_name]
+		mov	cx,[r_ncells]
+		mov	al,04h
+		call	.mark
+		mov	si,[r_spt]
+		mov	cx,800h
+		mov	al,08h
+		call	.mark
+		mov	si,[r_sat]
+		mov	cx,80h
+		mov	al,10h
+		call	.mark
+		pop	es
+		popa
+		ret
+; AL into the pages of SI .. SI + CX - 1 (none when CX is 0).
+.mark:		jcxz	.r
+		mov	bx,si
+		add	bx,cx
+		dec	bx
+		shr	bx,8			; BX: the last page
+		shr	si,8			; SI: the first
+.m:		and	si,3fh
+		or	[mark_pages + si],al
+		cmp	si,bx
+		je	.r
+		inc	si
+		jmp	.m
+.r:		ret
 
 ; VRAM BX.. was written, CX bytes (wrapping at 4000h); AX: the address after
 ; it. Flags the cells and leaves the VDP address there. DS = CS.
@@ -3463,6 +3537,7 @@ scr_off:	mov	byte [scr_on],0
 ; mark_addr, the colour pairs.
 render_setup:	push	word [render_fn]
 		call	.setup
+		call	mark_rebuild
 		pop	ax			; the gaiji cells left: blank
 		cmp	ax,loop_pcg
 		jne	.done
@@ -4336,7 +4411,7 @@ sprite_setup:	mov	al,[vregs + 6]
 		mov	[spr_ys],al
 		mov	al,[spr_ishift + bx]
 		mov	[spr_is],al
-		ret
+		jmp	mark_rebuild
 
 ; Image geometry by mode (8x8, 8x8 magnified, 16x16, 16x16 magnified):
 ; XSIZE, YSIZE, log2 of the image's bytes.
@@ -5588,6 +5663,8 @@ flipped		db	0			; render_flip moved a table
 glyphs_all	db	1			; pcg_glyphs: every pattern
 pend_set	db	1			; a pattern or colour flag pending
 zf_left		db	0			; z80_follow
+mark_cur	db	0			; mark_addr: the page's tables
+mark_pages	times	64 db 0			; mark_rebuild
 bench_reg	db	0			; ports 96h, 97h
 		align	2
 bench_latch	dw	0

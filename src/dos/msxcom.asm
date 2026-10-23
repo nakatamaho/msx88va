@@ -55,9 +55,9 @@
 %include "msxdata.inc"
 
 %ifdef MSX
-MAIN_SEG	equ	BASE + 0600h	; as in src/msx/msx.asm
-LOGO_SEG	equ	BASE + 0e00h
-CART_SEG	equ	BASE + 1200h
+MAIN_SEG	equ	BASE + 0700h	; as in src/msx/msx.asm
+LOGO_SEG	equ	BASE + 0f00h
+CART_SEG	equ	BASE + 1300h
 MAX_CARTS	equ	35		; keys 1-9, A-Z
 GAIJI		equ	0800h		; B0000h + : the gaiji area
 GAIJI_BYTES	equ	17c0h		; B0800h-B1FBFh (src/pcg/pcgtest.asm)
