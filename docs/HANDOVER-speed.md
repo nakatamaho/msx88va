@@ -99,7 +99,9 @@ Build-time test options (`tools/build_dos.py --define ...`):
   C000h) — shows whether the game finished its frame (PC in its idle
   loop); the Z80 PC of every trap, a ring of 2048 words at D200h (count
   at D000h) — the trap sites; and a copy of Z80 E380h-E47Fh at DF00h
-  (code a game builds in RAM). Disassemble with `z80dis`
+  (code a game builds in RAM); the Z80 code around the last trap
+  (80h bytes from PC - 40h at F000h, the PC at F080h: a trap site in
+  RAM). Disassemble with `z80dis`
   (`../z80venv`).
 - `DUMP_VRAM`: VRAM at GVRAM 8000h, the VDP registers at C000h, and a log
   of the BIOS VRAM calls; costs about half a frame itself, so the game

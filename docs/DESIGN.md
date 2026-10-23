@@ -265,6 +265,27 @@ untested.
   Checked against the TMS9918's rules computed from VRAM dumps (DUMP_VRAM
   now also stores f_hit and f_five at GVRAM C00Ah): 115 frames of four
   titles, 65 with five or more sprites, 34 with a collision, all equal.
+- The fifth sprite comes from the same count: `f_cnt` starts at -5 a row,
+  so the sprite whose count makes a row 0 is that row's fifth, and the
+  topmost such row gives f_five (`fifth_sprite` and its difference array
+  of 193 words are gone). With fewer than five sprites the loop stops at
+  the first collision. 180 frames of six titles (160 with five or more
+  sprites, 74 with a collision) equal to the TMS9918's rules.
+- `sprite_step` returns at once when no attribute table byte, sprite
+  pattern or sprite register was written since the last time
+  (`spr_dirty`, set with f_dirty); the written patterns are found with
+  REPE SCASB. (Building the descriptors in main RAM and writing only the
+  changed words was slower in vaeg for titles that rewrite the table
+  every frame: dropped.)
+- `kbd_scan` maps the VA ports to the MSX matrix only when one of the 15
+  differs from the last frame (5 700 -> 890 cycles; not with TEST_FIRE).
+- VRTC handler, vaeg VA model, 40 frames of play from frame 3000, mean
+  cycles (before -> after these three): Antarctic Adventure 33 400 ->
+  25 300, Bosconian 47 200 -> 39 300, Dig Dug 38 000 -> 25 500, Pac-Man
+  35 200 -> 23 600, Rally-X 27 700 -> 18 700, Star Force 41 400 ->
+  28 900, Star Soldier 32 300 -> 24 500. Bosconian's sprite_step (15 700)
+  is mostly pattern conversion: it moves its sprite pattern table every
+  four frames, about 8 patterns converted a frame.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

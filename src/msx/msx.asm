@@ -512,6 +512,19 @@ trap:		push	bp
 		mov	[es:0d200h + di],si
 		mov	di,[traps]
 		mov	[es:0d000h],di
+		push	ds			; and the Z80 code around the
+		push	si			; trap, 80h bytes from PC - 40h, at
+		push	cx			; GVRAM F000h (its PC at F080h)
+		mov	di,0f000h
+		mov	[es:di + 80h],si
+		sub	si,40h
+		mov	cx,Z80SEG
+		mov	ds,cx
+		mov	cx,40h
+		rep	movsw
+		pop	cx
+		pop	si
+		pop	ds
 		pop	di
 		pop	es
 %endif
@@ -1354,7 +1367,7 @@ set_vreg:	mov	ah,[vregs + bx]
 		test	ah,[vreg_sprites + bx]
 		jz	.cells
 		mov	byte [spr_all],1
-		mov	byte [f_dirty],1
+		mov	word [f_dirty],0101h	; and spr_dirty
 .cells:		and	ah,[vreg_cells + bx]
 		jz	.ret
 		mov	byte [vregchg],1
@@ -1409,14 +1422,14 @@ mark_addr:	push	ax
 		shr	ax,3
 		mov	bx,ax
 		mov	byte [spt_dirty + bx],1
-		mov	byte [f_dirty],1
+		mov	word [f_dirty],0101h	; and spr_dirty
 		pop	bx
 		push	bx
 .sat:		mov	ax,bx
 		sub	ax,[r_sat]
 		cmp	ax,80h
 		jae	.ret
-		mov	byte [f_dirty],1
+		mov	word [f_dirty],0101h	; and spr_dirty
 .ret:		pop	bx
 		pop	dx
 		pop	ax
@@ -1496,12 +1509,12 @@ mark_span:	pusha
 		shr	dx,3
 		mov	bx,spt_dirty
 		call	.fill
-		mov	byte [f_dirty],1
+		mov	word [f_dirty],0101h	; and spr_dirty
 .end:		mov	ax,[r_sat]		; the attribute table
 		mov	dx,80h
 		call	.clip
 		jc	.out
-		mov	byte [f_dirty],1
+		mov	word [f_dirty],0101h	; and spr_dirty
 .out:		pop	es
 		popa
 		ret
@@ -1730,13 +1743,24 @@ matrix_row:	mov	al,0ffh
 kbd_scan:	push	es
 		push	cs
 		pop	es
-		mov	di,va_keys
+		mov	di,kbd_new
 		xor	dx,dx
 		mov	cx,15
 .in:		in	al,dx
 		stosb
 		inc	dx
 		loop	.in
+		mov	si,kbd_new		; the same as last frame: the MSX
+		mov	di,va_keys		; matrix stays
+		mov	cx,15
+		repe	cmpsb
+%ifndef TEST_FIRE
+		je	.done
+%endif
+		mov	si,kbd_new
+		mov	di,va_keys
+		mov	cx,15
+		rep	movsb
 		mov	di,msx_keys
 		mov	al,0ffh
 		mov	cx,12
@@ -3044,7 +3068,12 @@ SPR_IMG		equ	1000h		; TVRAM offset of the images (16 KiB)
 SPR_TABLE	equ	7e00h		; TVRAM offset of the descriptors
 
 ; In the VRTC handler, DS = CS.
-sprite_step:	mov	dx,0153h		; TVRAM at A0000h
+sprite_step:	mov	al,[spr_all]		; nothing written: nothing to do
+		or	al,[spr_dirty]
+		jnz	.work
+		ret
+.work:		mov	byte [spr_dirty],0
+		mov	dx,0153h		; TVRAM at A0000h
 		in	al,dx
 		push	ax
 		and	al,0f0h
@@ -3116,17 +3145,29 @@ spr_ishift	db	5, 6, 6, 8
 
 ; Convert the written patterns. ES = TVRAM.
 sprite_patterns:
-		xor	bx,bx
-.next:		cmp	byte [spt_dirty + bx],0
-		jne	.one
-.skip:		inc	bl
-		jnz	.next
-		ret
-.one:		mov	byte [spt_dirty + bx],0
-		push	bx
+		push	es
+		push	cs
+		pop	es
+		mov	di,spt_dirty		; the flags found by REPE SCASB
+		mov	cx,256
+.find:		xor	al,al
+		repe	scasb
+		je	.done
+		mov	byte [di - 1],0
+		lea	bx,[di - 1 - spt_dirty]
+		pop	es
+		push	cx
+		push	di
 		call	convert_pattern
-		pop	bx
-		jmp	.skip
+		pop	di
+		pop	cx
+		push	es
+		push	cs
+		pop	es
+		jcxz	.done
+		jmp	.find
+.done:		pop	es
+		ret
 
 ; Pattern BX into its image part. ES = TVRAM, DS = CS.
 convert_pattern:
@@ -3422,29 +3463,38 @@ flags_compute:	push	es
 		pop	es
 		mov	byte [f_hit],0
 		mov	byte [f_five],0ffh
-		cmp	byte [f_n],5		; five or more: the fifth sprite
-		jb	.pairs
-		call	fifth_sprite
+		mov	word [f_fline],192
 .pairs:		mov	di,f_cnt		; f_cnt[row]: the sprites before
-		mov	cx,192 / 2		; f_j covering the row
-		xor	ax,ax
+		mov	cx,192 / 2		; f_j covering the row, less five
+		mov	ax,0fbfbh		; (0 when the fifth is counted)
 		rep	stosw
 		mov	byte [f_j],0		; each sprite against the earlier
-.jl:		mov	al,[f_j]		; ones, to the first collision
-		cmp	al,[f_n]
-		jae	.done
+.jl:		mov	al,[f_j]		; ones until the first collision,
+		cmp	al,[f_n]		; and its rows counted (with fewer
+		jae	.done			; than five, up to the collision)
 		call	sprite_rows
 		jge	.jnext
 		cmp	byte [f_j],0
 		je	.count
-		call	collide_j
 		cmp	byte [f_hit],0
-		jne	.done
-.count:		mov	si,[f_r0]		; then f_j's rows counted
-		mov	cx,[f_r1]
-		sub	cx,si
+		je	.test
+		cmp	byte [f_n],5
+		jb	.done
+		jmp	.count
+.test:		call	collide_j
+.count:		mov	si,[f_r0]		; f_j's rows: the sprite that makes
+		mov	cx,[f_r1]		; a row's count five is its fifth;
+		sub	cx,si			; f_five from the topmost such row
 .c:		inc	byte [f_cnt + si]
-		inc	si
+		jnz	.cn
+		cmp	si,[f_fline]
+		jae	.cn
+		mov	[f_fline],si
+		mov	bl,[f_j]
+		xor	bh,bh
+		mov	al,[f_num + bx]
+		mov	[f_five],al
+.cn:		inc	si
 		loop	.c
 .jnext:		inc	byte [f_j]
 		jmp	.jl
@@ -3468,64 +3518,6 @@ sprite_rows:	xor	ah,ah
 .r1:		mov	[f_r0],ax
 		mov	[f_r1],dx
 		cmp	ax,dx
-		ret
-
-; f_five: the number of the fifth sprite on the first line covered by
-; five, from a difference array of the rows each sprite covers. DS = ES =
-; CS.
-fifth_sprite:	mov	di,f_diff
-		xor	ax,ax
-		mov	cx,193
-		rep	stosw
-		xor	bx,bx			; +1 at the first row, -1 after
-.d:		mov	al,bl
-		push	bx
-		call	sprite_rows
-		jge	.dn
-		mov	si,ax
-		shl	si,1
-		inc	word [f_diff + si]
-		mov	si,dx
-		shl	si,1
-		dec	word [f_diff + si]
-.dn:		pop	bx
-		inc	bl
-		cmp	bl,[f_n]
-		jb	.d
-		mov	si,f_diff		; the first line with five
-		xor	dx,dx
-		xor	cx,cx			; CX: the line
-.l:		lodsw
-		add	dx,ax
-		cmp	dx,5
-		jge	.line
-		inc	cx
-		cmp	cx,192
-		jb	.l
-		ret
-.line:		xor	bx,bx			; the fifth sprite covering line CX
-		mov	ah,0
-.s:		push	ax
-		mov	al,bl
-		push	bx
-		push	cx
-		call	sprite_rows
-		pop	cx
-		pop	bx
-		pop	ax
-		cmp	cx,[f_r0]
-		jl	.sn
-		cmp	cx,[f_r1]
-		jge	.sn
-		inc	ah
-		cmp	ah,5
-		jne	.sn
-		mov	al,[f_num + bx]
-		mov	[f_five],al
-		ret
-.sn:		inc	bl
-		cmp	bl,[f_n]
-		jb	.s
 		ret
 
 ; Sprite f_j against sprites 0 .. f_j - 1 on rows f_r0 .. f_r1 - 1; sets
@@ -3561,8 +3553,10 @@ collide_j:	mov	byte [f_i],0
 		jge	.inext
 		mov	si,ax
 		mov	[f_rend],dx
-.row:		cmp	byte [f_cnt + si],4	; J must be one of the first four
-		jae	.rnext			; on the line
+.row:		mov	al,[f_cnt + si]		; J must be one of the first four
+		sub	al,0fbh			; on the line (f_cnt: the count
+		cmp	al,4			; less five)
+		jae	.rnext
 		call	collide_row
 		cmp	byte [f_hit],0
 		jne	.ret
@@ -3932,6 +3926,7 @@ sprites_hide:	push	es
 		xor	ax,ax
 		mov	cx,32 * 4
 		rep	stosw
+		mov	byte [spr_dirty],1	; all again after
 		pop	ax
 		mov	dx,0153h
 		out	dx,al
@@ -4359,7 +4354,8 @@ ppi_a		db	0
 ppi_c		db	0
 ed_op		db	0
 f_five		db	0ffh			; FFh: no fifth sprite
-f_dirty		db	1
+f_dirty		db	1			; these two adjacent:
+spr_dirty	db	1			; sprite_step: SAT, SPT or registers
 		align	2
 vars_end:
 
@@ -4391,8 +4387,9 @@ f_mi		dw	0, 0
 f_xi		dw	0
 f_pat		times	32 db 0
 f_num		times	32 db 0
-f_diff		times	193 dw 0
+f_fline		dw	0			; the topmost row with five
 f_cnt		times	192 db 0
+kbd_new		times	15 db 0			; kbd_scan
 f_n		db	0
 f_last		db	0
 f_hit		db	0
