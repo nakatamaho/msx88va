@@ -536,8 +536,9 @@ trap:		push	bp
 		call	port_out
 		pop	bx
 		cmp	bh,98h
-		jne	.done
+		jne	.follow
 		call	out_loop		; a known loop: the rest at once
+.follow:	call	out_follow		; and simple code up to more OUTs
 		jmp	.done
 .not_out:	cmp	bl,0dbh
 		jne	.ed
@@ -563,8 +564,12 @@ trap:		push	bp
 ; 0, HL past the bytes, A the last byte; the loop sets no flags):
 ;   T: LD A,(HL); CALL P; INC HL; DJNZ T   (7Eh CDh P 23h 10h d)
 ;   T: LD A,(HL); INC HL; CALL P; DJNZ T   (7Eh 23h CDh P 10h d)
+;   T: LD A,r; CALL P; DJNZ T   (r not B or (HL): B - 1 more bytes of A)
+; and, the OUT being in the loop itself (Antarctic Adventure's 44E6h):
+;   T: LD A,(HL); OUT (98h),A; INC HL; DEC BC; LD A,B; OR C; JR NZ,T
+; (then HL past the bytes, BC = 0, A = 0, flags of OR: Z, P).
 ; Found by the code's shape, not by a title's addresses. In the trap
-; handler: CX = the Z80 BC, DS = CS; keeps every register but CH (B).
+; handler: CX = the Z80 BC, DS = CS; keeps every register but CX (BC).
 out_loop:	cmp	word [bp + 4],Z80SEG
 		je	.z80
 		ret
@@ -573,7 +578,32 @@ out_loop:	cmp	word [bp + 4],Z80SEG
 		mov	ax,Z80SEG
 		mov	es,ax
 		mov	si,[bp + 2]		; after the OUT
-		cmp	byte [es:si],0c9h	; RET
+		cmp	byte [es:si - 3],7eh	; the loop around the OUT
+		jne	.sub
+		cmp	word [es:si],0b23h	; INC HL; DEC BC
+		jne	.sub
+		cmp	word [es:si + 2],0b178h	; LD A,B; OR C
+		jne	.sub
+		cmp	word [es:si + 4],0f720h	; JR NZ,T
+		jne	.sub
+		dec	cx			; BC - 1: the bytes left
+		jz	.no			; none: the Z80 ends the loop itself
+		add	si,6
+		mov	[bp + 2],si		; PC after the JR
+		mov	bx,[bp + T_HL]
+		inc	bx			; the next byte
+		mov	ax,bx
+		add	ax,cx
+		mov	[bp + T_HL],ax		; HL past them
+		call	.vcopy
+		mov	byte [bp + T_A],0	; A = B | C = 0
+		and	byte [bp + 6],2ah	; Z = 1, P = 1, S = H = C = 0
+		or	byte [bp + 6],44h
+		pop	es
+		popa
+		xor	cx,cx			; BC = 0
+		ret
+.sub:		cmp	byte [es:si],0c9h	; RET
 		jne	.no
 		sub	si,2			; SI: P
 		mov	di,[bp]			; Z80 SP
@@ -603,7 +633,10 @@ out_loop:	cmp	word [bp + 4],Z80SEG
 		add	ax,di
 		add	ax,2			; T
 		mov	bx,ax
-		add	ax,5
+		add	ax,4
+		cmp	ax,di
+		je	.fill
+		inc	ax
 		cmp	ax,di
 		jne	.no
 		cmp	word [es:bx],237eh	; LD A,(HL); INC HL
@@ -614,6 +647,63 @@ out_loop:	cmp	word [bp + 4],Z80SEG
 		jne	.no
 		lea	dx,[di + 2]
 		mov	bx,[bp + T_HL]		; (HL is past the byte written)
+.fill:		mov	al,[es:bx]		; LD A,r: r is not B, not (HL)
+		cmp	al,79h
+		jb	.no
+		cmp	al,7fh
+		ja	.no
+		cmp	al,7eh
+		je	.no
+		cmp	byte [es:bx + 1],0cdh	; CALL P
+		jne	.no
+		cmp	[es:bx + 2],si
+		jne	.no
+		lea	dx,[di + 2]		; after the DJNZ
+		mov	[bp + 2],dx
+		add	word [bp],2		; the RET's address popped
+		mov	cl,ch			; B - 1 more bytes of A
+		dec	cl
+		xor	ch,ch
+		jcxz	.filled
+		mov	al,[bp + T_A]
+		push	es
+		mov	di,[vaddr]
+		mov	bx,di
+		mov	dx,VRAMSEG
+		mov	es,dx
+		push	cx
+.f:		and	di,3fffh
+		stosb
+		loop	.f
+		pop	cx
+		pop	es
+		mov	[vahead],al
+		mov	ax,di
+		call	vram_written
+.filled:	pop	es
+		popa
+		mov	ch,0			; B = 0
+		ret
+; CX (1-65535) bytes from Z80 BX to VRAM at vaddr; flags them. ES = Z80SEG.
+.vcopy:		push	ds
+		mov	si,bx
+		mov	di,[cs:vaddr]
+		push	di
+		push	cx
+		mov	ax,VRAMSEG
+		mov	es,ax
+		mov	ax,Z80SEG
+		mov	ds,ax
+.vc:		and	di,3fffh
+		movsb
+		loop	.vc
+		mov	al,[si - 1]
+		pop	cx
+		pop	bx
+		pop	ds
+		mov	[vahead],al
+		mov	ax,di
+		jmp	vram_written
 .run:		mov	cl,ch			; CX: the bytes left, (B - 1) mod 256
 		dec	cl
 		xor	ch,ch
@@ -649,6 +739,144 @@ out_loop:	cmp	word [bp + 4],Z80SEG
 		ret
 .no:		pop	es
 		popa
+		ret
+
+; After a trapped OUT (n),A: the code that follows runs here while it is
+; LD r,r', LD r,n, LD r,(HL) (r not (HL)), INC rr or DEC rr (BC, DE, HL)
+; and OUT (n),A to a port of the trap's ranges (none of them sets a
+; flag), at most FOLLOW_MAX instructions; the Z80 goes on at the first
+; other one. So a register write and its data write (PSG A0h, A1h; VDP
+; 99h, 99h) take one trap. In the trap handler: CX = BC, DX = DE, the
+; frame's A and HL; DS = CS. Keeps every register but CX, DX (the Z80's).
+FOLLOW_MAX	equ	16
+
+out_follow:	cmp	word [bp + 4],Z80SEG
+		je	.z80
+		ret
+.z80:		push	es
+		push	di
+		mov	ax,Z80SEG
+		mov	es,ax
+		mov	si,[bp + 2]
+		mov	di,FOLLOW_MAX
+.next:		dec	di
+		jz	.stop
+		mov	al,[es:si]
+		cmp	al,0d3h			; OUT (n),A
+		je	.out
+		cmp	al,40h
+		jb	.low
+		cmp	al,80h
+		jae	.stop
+		mov	ah,al			; LD r,r'
+		and	ah,38h
+		cmp	ah,30h			; LD (HL),r: no
+		je	.stop
+		mov	bl,al
+		call	.get
+		mov	bl,al
+		shr	bl,3
+		call	.set
+		inc	si
+		jmp	.next
+.low:		mov	ah,al
+		and	ah,0c7h
+		cmp	ah,06h			; LD r,n
+		jne	.rr
+		mov	ah,al
+		and	ah,38h
+		cmp	ah,30h			; LD (HL),n: no
+		je	.stop
+		mov	bl,al
+		shr	bl,3
+		mov	ah,[es:si + 1]
+		call	.set
+		add	si,2
+		jmp	.next
+.rr:		cmp	al,03h			; INC BC
+		jne	.r1
+		inc	cx
+		jmp	.r_done
+.r1:		cmp	al,0bh			; DEC BC
+		jne	.r2
+		dec	cx
+		jmp	.r_done
+.r2:		cmp	al,13h			; INC DE
+		jne	.r3
+		inc	dx
+		jmp	.r_done
+.r3:		cmp	al,1bh			; DEC DE
+		jne	.r4
+		dec	dx
+		jmp	.r_done
+.r4:		cmp	al,23h			; INC HL
+		jne	.r5
+		inc	word [bp + T_HL]
+		jmp	.r_done
+.r5:		cmp	al,2bh			; DEC HL
+		jne	.stop
+		dec	word [bp + T_HL]
+.r_done:	inc	si
+		jmp	.next
+.out:		mov	ah,[es:si + 1]		; a port of the trap's ranges
+		cmp	ah,90h
+		jb	.stop
+		cmp	ah,99h
+		jbe	.port
+		cmp	ah,0a0h
+		jb	.stop
+		cmp	ah,0abh
+		ja	.stop
+.port:		mov	al,[bp + T_A]
+		push	si
+		call	port_out
+		pop	si
+		add	si,2
+		jmp	.next
+.stop:		mov	[bp + 2],si
+		pop	di
+		pop	es
+		ret
+; AH = Z80 register BL & 7 (B C D E H L (HL) A).
+.get:		and	bx,7
+		shl	bx,1
+		jmp	[cs:.gets + bx]
+.gets		dw	.gb, .gc, .gd, .ge, .gh, .gl, .ghl, .ga
+.gb:		mov	ah,ch
+		ret
+.gc:		mov	ah,cl
+		ret
+.gd:		mov	ah,dh
+		ret
+.ge:		mov	ah,dl
+		ret
+.gh:		mov	ah,[bp + T_HL + 1]
+		ret
+.gl:		mov	ah,[bp + T_HL]
+		ret
+.ghl:		mov	bx,[bp + T_HL]
+		mov	ah,[es:bx]
+		ret
+.ga:		mov	ah,[bp + T_A]
+		ret
+; Z80 register BL & 7 = AH ((HL) not used).
+.set:		and	bx,7
+		shl	bx,1
+		jmp	[cs:.sets + bx]
+.sets		dw	.sb, .sc, .sd, .se, .sh, .sl, .sl, .sa
+.sb:		mov	ch,ah
+		ret
+.sc:		mov	cl,ah
+		ret
+.sd:		mov	dh,ah
+		ret
+.se:		mov	dl,ah
+		ret
+.sh:		mov	[bp + T_HL + 1],ah
+		ret
+.sl:		mov	[bp + T_HL],ah
+		ret
+.sa:		mov	[bp + T_A],ah
 		ret
 
 ; Port AH, data AL. Keeps every register but AX, BX, SI.
@@ -766,6 +994,15 @@ trap_ed:	push	cx
 		jmp	.next
 .bdone:		or	byte [bp + 6],40h	; Z = 1
 .next:		add	word [bp + 2],2
+		test	byte [ed_op],10h	; a single OUTI, INI...: when the
+		jnz	.ret			; next instruction is the same, it
+		mov	di,[bp + 2]		; runs in this trap too (unrolled
+		mov	es,[bp + 4]		; transfers)
+		cmp	byte [es:di],0edh
+		jne	.ret
+		mov	al,[es:di + 1]
+		cmp	al,[ed_op]
+		je	.block
 .ret:		pop	es
 		pop	di
 		pop	dx

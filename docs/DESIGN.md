@@ -286,6 +286,29 @@ untested.
   28 900, Star Soldier 32 300 -> 24 500. Bosconian's sprite_step (15 700)
   is mostly pattern conversion: it moves its sprite pattern table every
   four frames, about 8 patterns converted a frame.
+- Trapped I/O of the 19 titles (MSX BIOS, vaeg VA model, play): Terminal
+  Run 121 a frame (unrolled OUTI to the VDP, PSG register pairs),
+  Antarctic Adventure 95 (its own VRAM loops and address set-up), GS
+  Soccer 42 (a byte write as IN 99h, OUT 99h twice, OUT 98h), Abu-Cymbel
+  27 and Shift 27 (PSG register loops), Star Soldier 11 (RAM `OUT
+  (98h),A; RET` from a `LD A,C; CALL; DJNZ` run), Star Force 2.4, the
+  others none. On the VA (~200 us a trap) Terminal Run and Antarctic
+  Adventure lose more than a frame's time to traps.
+- More done in one trap, all by the code's shape (no title's addresses,
+  no byte of a game changed): `out_loop` also takes `LD A,r; CALL P;
+  DJNZ` (B - 1 more bytes of A) and the loop around the OUT `LD A,(HL);
+  OUT (98h),A; INC HL; DEC BC; LD A,B; OR C; JR NZ` (HL past, BC = 0, A
+  = 0, Z and P set); `trap_ed` runs the following OUTI, INI... while the
+  next instruction is the same (unrolled transfers); `out_follow` runs
+  after any trapped OUT (n),A the code that follows while it is LD r,r',
+  LD r,n, LD r,(HL), INC/DEC of BC, DE, HL or OUT (n),A to a trapped port
+  (none sets a flag; at most 16), so a register and its data write take
+  one trap. Traps a frame: Terminal Run 121 -> 37, Antarctic Adventure 95
+  -> 46, Star Soldier 11 -> 4, Shift 27 -> 20, GS Soccer about half; the
+  19 titles look as before with both BIOSes. Left: PSG register loops
+  with INC A; CP n; JR NZ between the writes, and returns (RET, POP AF)
+  between an address set-up and its data write: they need flags, a Z80
+  interpreter for a few instructions.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
