@@ -309,6 +309,33 @@ untested.
   with INC A; CP n; JR NZ between the writes, and returns (RET, POP AF)
   between an address set-up and its data write: they need flags, a Z80
   interpreter for a few instructions.
+- `z80_follow` (in place of out_follow): after any trapped I/O
+  instruction the following Z80 code is interpreted while it is made of
+  LD (registers, (HL), (BC), (DE), (nn), 16-bit immediates), INC/DEC (r,
+  (HL), rr), ADD/SUB/AND/XOR/OR/CP (r, (HL), n), CPL, SCF, CCF, JR/JP
+  (cc), DJNZ, CALL, RET (cc), PUSH/POP, DI, EI, RES/SET b,r, IN A,(n),
+  OUT (n),A and OUTI to the trap's ports, and reaches more I/O within 12
+  instructions (counted again after each I/O, 256 at most in one trap);
+  an OUT (98h),A tries out_loop. The flags are the uPD9002's (vaeg
+  docs/modernization/uPD9002-zex-results.md R1-R11): F is the PSW's low
+  byte (S Z - H - P/V N C), bits 5 and 3 always 0, AND leaves H = 0,
+  CPL/SCF/CCF change no other flag, INC/DEC/ADD/SUB/CP as the Z80 (P/V
+  from the V30's OF), logic P/V parity. ADC, SBC, rotates, DAA, BIT, the
+  index registers and block moves stop it (the uPD9002 runs them).
+- Checked with `tools/follow_cart.py`: a generated test cartridge runs 47
+  snippets after a trap, each with four AF values, on msx88va with
+  z80_follow and with `--define TEST_NOFOLLOW` (every I/O trapped alone,
+  the rest run by the uPD9002 in vaeg): registers, flags, SP, memory and
+  VRAM equal in all 188 cases (about 13 000 instructions interpreted).
+  It found a bug first: `zf_pop` used BX, which held the register to pop
+  into, so POP HL acted as POP AF and C-BIOS hung at its slot switch.
+- Traps a frame in play (vaeg, VA model, MSX BIOS), before out_loop's
+  additions -> after them -> with z80_follow: Terminal Run 121 -> 37 ->
+  4.3, Antarctic Adventure 95 -> 46 -> 13, GS Soccer about 44 -> 22 -> 4,
+  Abu-Cymbel 27 -> 27 -> 1, Shift 27 -> 20 -> 8, Star Soldier 11 -> 4 ->
+  3.6; z80_follow interprets up to about 260 instructions a frame. The
+  19 titles look as before with both BIOSes. Terminal Run and Antarctic
+  Adventure still take only about 0.8 VRTCs a frame in vaeg.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

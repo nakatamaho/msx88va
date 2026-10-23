@@ -538,14 +538,14 @@ trap:		push	bp
 		cmp	bh,98h
 		jne	.follow
 		call	out_loop		; a known loop: the rest at once
-.follow:	call	out_follow		; and simple code up to more OUTs
-		jmp	.done
+		jmp	.follow
 .not_out:	cmp	bl,0dbh
 		jne	.ed
 		add	word [bp + 2],2		; IN A,(n)
 		mov	ah,bh
 		call	port_in
 		mov	[bp + T_A],al
+.follow:	call	z80_follow		; the code up to more I/O
 .done:		cmp	word [bp + 4],Z80SEG
 		jne	.ret
 		call	try_inject
@@ -570,7 +570,11 @@ trap:		push	bp
 ; (then HL past the bytes, BC = 0, A = 0, flags of OR: Z, P).
 ; Found by the code's shape, not by a title's addresses. In the trap
 ; handler: CX = the Z80 BC, DS = CS; keeps every register but CX (BC).
-out_loop:	cmp	word [bp + 4],Z80SEG
+out_loop:
+%ifdef TEST_NOFOLLOW
+		ret
+%endif
+		cmp	word [bp + 4],Z80SEG
 		je	.z80
 		ret
 .z80:		pusha
@@ -741,16 +745,31 @@ out_loop:	cmp	word [bp + 4],Z80SEG
 		popa
 		ret
 
-; After a trapped OUT (n),A: the code that follows runs here while it is
-; LD r,r', LD r,n, LD r,(HL) (r not (HL)), INC rr or DEC rr (BC, DE, HL)
-; and OUT (n),A to a port of the trap's ranges (none of them sets a
-; flag), at most FOLLOW_MAX instructions; the Z80 goes on at the first
-; other one. So a register write and its data write (PSG A0h, A1h; VDP
-; 99h, 99h) take one trap. In the trap handler: CX = BC, DX = DE, the
-; frame's A and HL; DS = CS. Keeps every register but CX, DX (the Z80's).
-FOLLOW_MAX	equ	16
+; After a trapped I/O instruction the Z80 code that follows runs here,
+; interpreted, as long as it is made of the instructions below and reaches
+; more I/O within FOLLOW_MAX instructions (counted again after each I/O
+; instruction); the Z80 goes on at the first other instruction. So a loop
+; of register and data writes (the PSG's A0h/A1h, the VDP's 99h/98h)
+; takes one trap. The flags are the uPD9002's, which differ from a Z80's
+; (vaeg docs/modernization/uPD9002-zex-results.md): F is the low byte of
+; the PSW in the frame, bits 5 and 3 always 0 (R1); AND leaves H = 0 (R2);
+; CPL, SCF and CCF change no other flag (R8-R10); INC, DEC, ADD, SUB, CP,
+; OR, XOR as the Z80's (P/V overflow for arithmetic, parity for logic).
+; Instructions: NOP; LD r,r', LD r,n, LD r,(HL), LD (HL),r, LD (HL),n,
+; LD rr,nn, LD A,(BC/DE/nn), LD (BC/DE/nn),A; INC/DEC r, (HL), rr; ADD,
+; SUB, AND, XOR, OR, CP with r, (HL) or n; CPL, SCF, CCF; JR, JR cc, JP,
+; JP cc, DJNZ, CALL, RET, RET cc; PUSH, POP (BC, DE, HL, AF); DI, EI;
+; RES, SET b,r; IN A,(n), OUT (n),A to the trap's ports; OUTI to them.
+; An OUT (98h),A tries out_loop. In the trap handler (trap.follow): CX =
+; BC, DX = DE, the frame's A, HL, SP, PC and F; DS = CS. Keeps every
+; register but CX, DX (the Z80's), AX, BX, SI.
+FOLLOW_MAX	equ	12
 
-out_follow:	cmp	word [bp + 4],Z80SEG
+z80_follow:
+%ifdef TEST_NOFOLLOW				; tests: every I/O trapped alone
+		ret
+%endif
+		cmp	word [bp + 4],Z80SEG
 		je	.z80
 		ret
 .z80:		push	es
@@ -758,126 +777,514 @@ out_follow:	cmp	word [bp + 4],Z80SEG
 		mov	ax,Z80SEG
 		mov	es,ax
 		mov	si,[bp + 2]
-		mov	di,FOLLOW_MAX
-.next:		dec	di
+		mov	byte [zf_left],FOLLOW_MAX
+		mov	word [zf_all],256	; and at most this many in all
+.next:		dec	word [zf_all]
 		jz	.stop
-		mov	al,[es:si]
-		cmp	al,0d3h			; OUT (n),A
-		je	.out
-		cmp	al,40h
-		jb	.low
-		cmp	al,80h
-		jae	.stop
-		mov	ah,al			; LD r,r'
-		and	ah,38h
-		cmp	ah,30h			; LD (HL),r: no
-		je	.stop
-		mov	bl,al
-		call	.get
-		mov	bl,al
-		shr	bl,3
-		call	.set
-		inc	si
-		jmp	.next
-.low:		mov	ah,al
-		and	ah,0c7h
-		cmp	ah,06h			; LD r,n
-		jne	.rr
-		mov	ah,al
-		and	ah,38h
-		cmp	ah,30h			; LD (HL),n: no
-		je	.stop
-		mov	bl,al
-		shr	bl,3
-		mov	ah,[es:si + 1]
-		call	.set
-		add	si,2
-		jmp	.next
-.rr:		cmp	al,03h			; INC BC
-		jne	.r1
-		inc	cx
-		jmp	.r_done
-.r1:		cmp	al,0bh			; DEC BC
-		jne	.r2
-		dec	cx
-		jmp	.r_done
-.r2:		cmp	al,13h			; INC DE
-		jne	.r3
-		inc	dx
-		jmp	.r_done
-.r3:		cmp	al,1bh			; DEC DE
-		jne	.r4
-		dec	dx
-		jmp	.r_done
-.r4:		cmp	al,23h			; INC HL
-		jne	.r5
-		inc	word [bp + T_HL]
-		jmp	.r_done
-.r5:		cmp	al,2bh			; DEC HL
-		jne	.stop
-		dec	word [bp + T_HL]
-.r_done:	inc	si
-		jmp	.next
-.out:		mov	ah,[es:si + 1]		; a port of the trap's ranges
-		cmp	ah,90h
-		jb	.stop
-		cmp	ah,99h
-		jbe	.port
-		cmp	ah,0a0h
-		jb	.stop
-		cmp	ah,0abh
-		ja	.stop
-.port:		mov	al,[bp + T_A]
-		push	si
-		call	port_out
-		pop	si
-		add	si,2
-		jmp	.next
+		dec	byte [zf_left]
+		jz	.stop
+		mov	[zf_pc],si		; the instruction's start
+		mov	bl,[es:si]
+		xor	bh,bh
+		shl	bx,1
+		jmp	[cs:zf_table + bx]
 .stop:		mov	[bp + 2],si
 		pop	di
 		pop	es
 		ret
-; AH = Z80 register BL & 7 (B C D E H L (HL) A).
-.get:		and	bx,7
+
+; The opcode handlers: SI at the opcode; each ends with jmp z80_follow.next
+; (SI past the instruction) or .stop (SI at it).
+%define ZN	z80_follow.next
+%define ZS	z80_follow.stop
+
+; Z80 register r (bits of BL & 7: B C D E H L (HL) A) <-> AH.
+zf_get:		and	bx,7
 		shl	bx,1
-		jmp	[cs:.gets + bx]
-.gets		dw	.gb, .gc, .gd, .ge, .gh, .gl, .ghl, .ga
-.gb:		mov	ah,ch
+		jmp	[cs:.t + bx]
+.t		dw	.b, .c, .d, .e, .h, .l, .m, .a
+.b:		mov	ah,ch
 		ret
-.gc:		mov	ah,cl
+.c:		mov	ah,cl
 		ret
-.gd:		mov	ah,dh
+.d:		mov	ah,dh
 		ret
-.ge:		mov	ah,dl
+.e:		mov	ah,dl
 		ret
-.gh:		mov	ah,[bp + T_HL + 1]
+.h:		mov	ah,[bp + T_HL + 1]
 		ret
-.gl:		mov	ah,[bp + T_HL]
+.l:		mov	ah,[bp + T_HL]
 		ret
-.ghl:		mov	bx,[bp + T_HL]
+.m:		mov	bx,[bp + T_HL]
 		mov	ah,[es:bx]
 		ret
-.ga:		mov	ah,[bp + T_A]
+.a:		mov	ah,[bp + T_A]
 		ret
-; Z80 register BL & 7 = AH ((HL) not used).
-.set:		and	bx,7
+zf_set:		and	bx,7
 		shl	bx,1
-		jmp	[cs:.sets + bx]
-.sets		dw	.sb, .sc, .sd, .se, .sh, .sl, .sl, .sa
-.sb:		mov	ch,ah
+		jmp	[cs:.t + bx]
+.t		dw	.b, .c, .d, .e, .h, .l, .m, .a
+.b:		mov	ch,ah
 		ret
-.sc:		mov	cl,ah
+.c:		mov	cl,ah
 		ret
-.sd:		mov	dh,ah
+.d:		mov	dh,ah
 		ret
-.se:		mov	dl,ah
+.e:		mov	dl,ah
 		ret
-.sh:		mov	[bp + T_HL + 1],ah
+.h:		mov	[bp + T_HL + 1],ah
 		ret
-.sl:		mov	[bp + T_HL],ah
+.l:		mov	[bp + T_HL],ah
 		ret
-.sa:		mov	[bp + T_A],ah
+.m:		mov	bx,[bp + T_HL]
+		mov	[es:bx],ah
 		ret
+.a:		mov	[bp + T_A],ah
+		ret
+
+; F from the V30 flags of the operation just done (call right after it):
+; zf_flags_log: S, Z, P (parity); H, N, C = 0. zf_flags_arith: S, Z, H,
+; C, P/V = overflow; N = DL... (AL: 0 or 2 for N). zf_flags_incdec: as
+; arith but C kept from F.
+zf_flags_log:	lahf
+		and	ah,0c4h
+		mov	[bp + 6],ah
+		ret
+zf_flags_arith:	lahf				; AL: N (0 or 2)
+		jno	.v
+		or	ah,04h
+		jmp	.n
+.v:		and	ah,0fbh
+.n:		and	ah,0d5h
+		or	ah,al
+		mov	[bp + 6],ah
+		ret
+zf_flags_incdec:
+		lahf
+		jno	.v
+		or	ah,04h
+		jmp	.n
+.v:		and	ah,0fbh
+.n:		and	ah,0d4h
+		or	ah,al
+		mov	al,[bp + 6]
+		and	al,1
+		or	ah,al
+		mov	[bp + 6],ah
+		ret
+
+; The condition cc (bits 5-3 of the opcode in BL: NZ Z NC C PO PE P M) of
+; F -> ZF (V30) set when the condition holds... returned as AL = 1/0.
+zf_cond:	mov	al,[bp + 6]
+		shr	bl,3
+		and	bl,7
+		mov	bh,bl
+		shr	bl,1			; 0 Z, 1 C, 2 P/V, 3 S
+		mov	ah,40h
+		cmp	bl,1
+		jne	.p
+		mov	ah,01h
+.p:		cmp	bl,2
+		jne	.s
+		mov	ah,04h
+.s:		cmp	bl,3
+		jne	.t
+		mov	ah,80h
+.t:		and	al,ah			; the flag
+		jz	.zero
+		mov	al,1
+.zero:		test	bh,1			; odd: the flag set; even: clear
+		jnz	.ret
+		xor	al,1
+.ret:		ret
+
+zf_nop:		inc	si
+		jmp	ZN
+zf_ld_rr:	mov	bl,[es:si]		; 00rr0001: LD rr,nn (not SP)
+		mov	ax,[es:si + 1]
+		add	si,3
+		cmp	bl,01h
+		jne	.de
+		mov	cx,ax
+		jmp	ZN
+.de:		cmp	bl,11h
+		jne	.hl
+		mov	dx,ax
+		jmp	ZN
+.hl:		mov	[bp + T_HL],ax
+		jmp	ZN
+zf_ld_bca:	mov	bx,cx			; LD (BC),A
+		jmp	zf_st_a
+zf_ld_dea:	mov	bx,dx			; LD (DE),A
+zf_st_a:	mov	al,[bp + T_A]
+		mov	[es:bx],al
+		inc	si
+		jmp	ZN
+zf_ld_abc:	mov	bx,cx			; LD A,(BC)
+		jmp	zf_ld_a
+zf_ld_ade:	mov	bx,dx			; LD A,(DE)
+zf_ld_a:	mov	al,[es:bx]
+		mov	[bp + T_A],al
+		inc	si
+		jmp	ZN
+zf_ld_nna:	mov	bx,[es:si + 1]		; LD (nn),A
+		mov	al,[bp + T_A]
+		mov	[es:bx],al
+		add	si,3
+		jmp	ZN
+zf_ld_ann:	mov	bx,[es:si + 1]		; LD A,(nn)
+		mov	al,[es:bx]
+		mov	[bp + T_A],al
+		add	si,3
+		jmp	ZN
+zf_incdec_rr:	mov	bl,[es:si]		; INC/DEC BC, DE, HL
+		inc	si
+		mov	al,bl
+		and	al,30h
+		test	bl,08h
+		jnz	.dec
+		cmp	al,00h
+		jne	.ide
+		inc	cx
+		jmp	ZN
+.ide:		cmp	al,10h
+		jne	.ihl
+		inc	dx
+		jmp	ZN
+.ihl:		inc	word [bp + T_HL]
+		jmp	ZN
+.dec:		cmp	al,00h
+		jne	.dde
+		dec	cx
+		jmp	ZN
+.dde:		cmp	al,10h
+		jne	.dhl
+		dec	dx
+		jmp	ZN
+.dhl:		dec	word [bp + T_HL]
+		jmp	ZN
+zf_inc_r:	mov	bl,[es:si]		; INC r
+		shr	bl,3
+		push	bx
+		call	zf_get
+		inc	ah
+		mov	al,0
+		push	ax
+		call	zf_flags_incdec
+		pop	ax
+		pop	bx
+		call	zf_set
+		inc	si
+		jmp	ZN
+zf_dec_r:	mov	bl,[es:si]		; DEC r
+		shr	bl,3
+		push	bx
+		call	zf_get
+		dec	ah
+		mov	al,2
+		push	ax
+		call	zf_flags_incdec
+		pop	ax
+		pop	bx
+		call	zf_set
+		inc	si
+		jmp	ZN
+zf_ld_rn:	mov	bl,[es:si]		; LD r,n
+		shr	bl,3
+		mov	ah,[es:si + 1]
+		call	zf_set
+		add	si,2
+		jmp	ZN
+zf_ld_r_r:	mov	bl,[es:si]		; LD r,r'
+		call	zf_get
+		mov	bl,[es:si]
+		shr	bl,3
+		call	zf_set
+		inc	si
+		jmp	ZN
+zf_cpl:		not	byte [bp + T_A]		; R8: no flag
+		inc	si
+		jmp	ZN
+zf_scf:		or	byte [bp + 6],01h	; R9: C only
+		inc	si
+		jmp	ZN
+zf_ccf:		xor	byte [bp + 6],01h	; R10: C only
+		inc	si
+		jmp	ZN
+; ALU A,r (80h-BFh) and A,n (C6h-FEh): bits 5-3 select ADD ADC SUB SBC AND
+; XOR OR CP; ADC and SBC are not done.
+zf_alu_r:	mov	bl,[es:si]
+		call	zf_get
+		mov	al,[es:si]
+		inc	si
+		jmp	zf_alu
+zf_alu_n:	mov	ah,[es:si + 1]
+		mov	al,[es:si]
+		add	si,2
+zf_alu:		and	al,38h			; AH: the operand
+		mov	bl,[bp + T_A]
+		cmp	al,00h
+		je	.add
+		cmp	al,10h
+		je	.sub
+		cmp	al,20h
+		je	.and
+		cmp	al,28h
+		je	.xor
+		cmp	al,30h
+		je	.or
+		cmp	al,38h
+		je	.cp
+		jmp	.undo			; ADC, SBC: not done
+.add:		add	bl,ah
+		mov	al,0
+		call	zf_flags_arith
+		mov	[bp + T_A],bl
+		jmp	ZN
+.sub:		sub	bl,ah
+		mov	al,2
+		call	zf_flags_arith
+		mov	[bp + T_A],bl
+		jmp	ZN
+.cp:		cmp	bl,ah
+		mov	al,2
+		call	zf_flags_arith
+		jmp	ZN
+.and:		and	bl,ah
+		call	zf_flags_log		; R2: H = 0
+		mov	[bp + T_A],bl
+		jmp	ZN
+.xor:		xor	bl,ah
+		call	zf_flags_log
+		mov	[bp + T_A],bl
+		jmp	ZN
+.or:		or	bl,ah
+		call	zf_flags_log
+		mov	[bp + T_A],bl
+		jmp	ZN
+.undo:		mov	si,[cs:zf_pc]		; the instruction not done
+		jmp	ZS
+zf_jr:		mov	al,[es:si + 1]		; JR e
+		cbw
+		add	si,2
+		add	si,ax
+		jmp	ZN
+zf_jrcc:	mov	bl,[es:si]		; JR NZ, Z, NC, C (20h-38h)
+		and	bl,18h			; cc 0-3 in bits 4-3
+		call	zf_cond
+		or	al,al
+		jnz	zf_jr
+		add	si,2
+		jmp	ZN
+zf_djnz:	dec	ch
+		jnz	zf_jr
+		add	si,2
+		jmp	ZN
+zf_jp:		mov	si,[es:si + 1]
+		jmp	ZN
+zf_jpcc:	mov	bl,[es:si]
+		call	zf_cond
+		or	al,al
+		jnz	zf_jp
+		add	si,3
+		jmp	ZN
+zf_call:	mov	ax,si			; push the return address
+		add	ax,3
+		call	zf_push
+		mov	si,[es:si + 1]
+		jmp	ZN
+zf_ret:		call	zf_pop
+		mov	si,ax
+		jmp	ZN
+zf_retcc:	mov	bl,[es:si]
+		call	zf_cond
+		or	al,al
+		jnz	zf_ret
+		inc	si
+		jmp	ZN
+zf_push_rr:	mov	bl,[es:si]		; PUSH BC DE HL AF
+		inc	si
+		and	bl,30h
+		mov	ax,cx
+		cmp	bl,00h
+		je	.p
+		mov	ax,dx
+		cmp	bl,10h
+		je	.p
+		mov	ax,[bp + T_HL]
+		cmp	bl,20h
+		je	.p
+		mov	ah,[bp + T_A]		; AF
+		mov	al,[bp + 6]
+.p:		call	zf_push
+		jmp	ZN
+zf_pop_rr:	mov	bl,[es:si]		; POP BC DE HL AF
+		inc	si
+		and	bl,30h
+		call	zf_pop
+		cmp	bl,00h
+		jne	.de
+		mov	cx,ax
+		jmp	ZN
+.de:		cmp	bl,10h
+		jne	.hl
+		mov	dx,ax
+		jmp	ZN
+.hl:		cmp	bl,20h
+		jne	.af
+		mov	[bp + T_HL],ax
+		jmp	ZN
+.af:		mov	[bp + T_A],ah
+		and	al,0d7h			; R1: bits 5, 3 read 0
+		mov	[bp + 6],al
+		jmp	ZN
+zf_push:	mov	di,[bp]			; AX onto the Z80 stack (uses DI)
+		sub	di,2
+		mov	[bp],di
+		mov	[es:di],ax
+		ret
+zf_pop:		mov	di,[bp]			; AX from the Z80 stack (uses DI)
+		mov	ax,[es:di]
+		add	word [bp],2
+		ret
+zf_di:		and	byte [bp + 7],0fdh	; IF in the PSW
+		inc	si
+		jmp	ZN
+zf_ei:		or	byte [bp + 7],02h
+		inc	si
+		jmp	ZN
+zf_cb:		mov	bl,[es:si + 1]		; CB: RES and SET b,r (not (HL))
+		cmp	bl,80h
+		jb	ZS
+		mov	al,bl
+		and	al,7
+		cmp	al,6
+		je	ZS
+		push	bx
+		call	zf_get
+		pop	bx
+		push	cx			; (CX is the Z80 BC)
+		mov	cl,bl
+		shr	cl,3
+		and	cl,7
+		mov	al,1
+		shl	al,cl
+		pop	cx
+		test	bl,40h
+		jnz	.set
+		not	al
+		and	ah,al
+		jmp	.put
+.set:		or	ah,al
+.put:		call	zf_set
+		add	si,2
+		jmp	ZN
+zf_out:		mov	ah,[es:si + 1]		; OUT (n),A
+		call	zf_port
+		jc	ZS
+		mov	al,[bp + T_A]
+		push	si
+		call	port_out
+		pop	si
+		add	si,2
+		mov	byte [zf_left],FOLLOW_MAX
+		cmp	byte [es:si - 1],98h
+		jne	ZN
+		mov	[bp + 2],si		; a known loop, as after a trap
+		call	out_loop
+		mov	si,[bp + 2]
+		jmp	ZN
+zf_in:		mov	ah,[es:si + 1]		; IN A,(n)
+		call	zf_port
+		jc	ZS
+		push	si
+		call	port_in
+		pop	si
+		mov	[bp + T_A],al
+		add	si,2
+		mov	byte [zf_left],FOLLOW_MAX
+		jmp	ZN
+zf_ed:		cmp	byte [es:si + 1],0a3h	; OUTI
+		jne	ZS
+		mov	ah,cl			; port C
+		call	zf_port
+		jc	ZS
+		mov	bx,[bp + T_HL]
+		mov	al,[es:bx]
+		dec	ch
+		push	si
+		call	port_out
+		pop	si
+		inc	word [bp + T_HL]
+		and	byte [bp + 6],0bfh	; Z from B, as trap_ed
+		or	ch,ch
+		jnz	.nz
+		or	byte [bp + 6],40h
+.nz:		add	si,2
+		mov	byte [zf_left],FOLLOW_MAX
+		jmp	ZN
+; CF = 1 unless port AH is in the trap's ranges.
+zf_port:	cmp	ah,90h
+		jb	.no
+		cmp	ah,99h
+		jbe	.yes
+		cmp	ah,0a0h
+		jb	.no
+		cmp	ah,0abh
+		ja	.no
+.yes:		clc
+		ret
+.no:		stc
+		ret
+
+%undef ZN
+%undef ZS
+
+; The handlers by opcode (ZS: stop there).
+%macro ZOP 2
+ %rep %2
+		dw	%1
+ %endrep
+%endmacro
+zf_table:	dw	zf_nop, zf_ld_rr, zf_ld_bca, zf_incdec_rr	; 00-03
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, z80_follow.stop	; 04-07 RLCA
+		dw	z80_follow.stop, z80_follow.stop, zf_ld_abc, zf_incdec_rr ; 08-0B
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, z80_follow.stop	; 0C-0F
+		dw	zf_djnz, zf_ld_rr, zf_ld_dea, zf_incdec_rr	; 10-13
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, z80_follow.stop	; 14-17
+		dw	zf_jr, z80_follow.stop, zf_ld_ade, zf_incdec_rr	; 18-1B
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, z80_follow.stop	; 1C-1F
+		dw	zf_jrcc, zf_ld_rr, z80_follow.stop, zf_incdec_rr ; 20-23
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, z80_follow.stop	; 24-27 DAA
+		dw	zf_jrcc, z80_follow.stop, z80_follow.stop, zf_incdec_rr ; 28-2B
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, zf_cpl		; 2C-2F
+		dw	zf_jrcc, z80_follow.stop, zf_ld_nna, z80_follow.stop ; 30-33
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, zf_scf		; 34-37
+		dw	zf_jrcc, z80_follow.stop, zf_ld_ann, z80_follow.stop ; 38-3B
+		dw	zf_inc_r, zf_dec_r, zf_ld_rn, zf_ccf		; 3C-3F
+		ZOP	zf_ld_r_r, 54				; 40-75
+		dw	z80_follow.stop				; 76 HALT
+		ZOP	zf_ld_r_r, 9				; 77-7F
+		ZOP	zf_alu_r, 64				; 80-BF
+		dw	zf_retcc, zf_pop_rr, zf_jpcc, zf_jp		; C0-C3
+		dw	z80_follow.stop, zf_push_rr, zf_alu_n, z80_follow.stop ; C4-C7
+		dw	zf_retcc, zf_ret, zf_jpcc, zf_cb		; C8-CB
+		dw	z80_follow.stop, zf_call, z80_follow.stop, z80_follow.stop ; CC-CF
+		dw	zf_retcc, zf_pop_rr, zf_jpcc, zf_out		; D0-D3
+		dw	z80_follow.stop, zf_push_rr, zf_alu_n, z80_follow.stop ; D4-D7
+		dw	zf_retcc, z80_follow.stop, zf_jpcc, zf_in		; D8-DB
+		dw	z80_follow.stop, z80_follow.stop, z80_follow.stop, z80_follow.stop ; DC-DF
+		dw	zf_retcc, zf_pop_rr, zf_jpcc, z80_follow.stop	; E0-E3
+		dw	z80_follow.stop, zf_push_rr, zf_alu_n, z80_follow.stop ; E4-E7
+		dw	zf_retcc, z80_follow.stop, zf_jpcc, z80_follow.stop ; E8-EB
+		dw	z80_follow.stop, zf_ed, zf_alu_n, z80_follow.stop ; EC-EF
+		dw	zf_retcc, zf_pop_rr, zf_jpcc, zf_di		; F0-F3
+		dw	z80_follow.stop, zf_push_rr, zf_alu_n, z80_follow.stop ; F4-F7
+		dw	zf_retcc, z80_follow.stop, zf_jpcc, zf_ei	; F8-FB
+		dw	z80_follow.stop, z80_follow.stop, zf_alu_n, z80_follow.stop ; FC-FF
+%if ($ - zf_table) != 512
+ %error zf_table is not 256 entries
+%endif
 
 ; Port AH, data AL. Keeps every register but AX, BX, SI.
 port_out:	mov	bl,ah
@@ -944,7 +1351,11 @@ trap_ed:	push	cx
 		xor	al,al			; it runs untrapped
 		mov	dx,TRAP_CTRL
 		out	dx,al
-		jmp	.ret
+		pop	es
+		pop	di
+		pop	dx
+		pop	cx
+		jmp	trap.done
 .single:	add	word [bp + 2],2
 		mov	bl,bh			; register number
 		shr	bl,3
@@ -994,6 +1405,9 @@ trap_ed:	push	cx
 		jmp	.next
 .bdone:		or	byte [bp + 6],40h	; Z = 1
 .next:		add	word [bp + 2],2
+%ifdef TEST_NOFOLLOW
+		jmp	.ret
+%endif
 		test	byte [ed_op],10h	; a single OUTI, INI...: when the
 		jnz	.ret			; next instruction is the same, it
 		mov	di,[bp + 2]		; runs in this trap too (unrolled
@@ -1007,7 +1421,7 @@ trap_ed:	push	cx
 		pop	di
 		pop	dx
 		pop	cx
-		jmp	trap.done
+		jmp	trap.follow
 
 ; ---------------------------------------------------------------------------
 ; C-BIOS 0.29a routines that start with CALLN CALLN_VEC (tools/cbios.py).
@@ -4574,6 +4988,10 @@ spr_conv	db	0			; 1: patterns converted in spr_mode
 flipped		db	0			; render_flip moved a table
 glyphs_all	db	1			; pcg_glyphs: every pattern
 pend_set	db	1			; a pattern or colour flag pending
+zf_left		db	0			; z80_follow
+		align	2
+zf_all		dw	0
+zf_pc		dw	0
 skip_run	db	0			; frames skipped in a row
 st_count	db	0			; stats_tick's frames
 f10_prev	db	0

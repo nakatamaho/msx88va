@@ -86,7 +86,8 @@ Test options for the MSX program: `--define TEST_RESET=n`, `DUMP_VRAM`,
 `PROFILE` (DESIGN "M04"; DUMP_VRAM slows the game itself), `TEST_KEYS`
 (M acts as F10: vaeg's `@hold` cannot hold F10), `TEST_FIRE` (SPACE and
 trigger A pressed four frames in eight, for measurements with a debug
-script, which cannot hold keys).
+script, which cannot hold keys), `TEST_NOFOLLOW` (no z80_follow or I/O
+loop shortcuts: the reference for `tools/follow_cart.py`).
 
 ## Testing in vaeg
 
