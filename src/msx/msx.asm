@@ -5257,7 +5257,8 @@ svc_texts	db	4, 1, 15, 'msx88va settings', 0
 		db	0ffh
 
 draw_mode	db	0			; 0 AUTO, 1 every frame, 2 1/2, 3 1/3
-follow_on	db	1			; z80_follow on
+follow_on	db	0			; z80_follow on (F10; off: it costs
+						; more than it saves, BENCH.ROM)
 scr_allow	db	1			; scrolling by frame buffer 2
 		align	2
 ring_seg	dw	0			; the scroll ring (screen_init)

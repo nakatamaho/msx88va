@@ -442,6 +442,31 @@ untested.
   decides I/O follow's default and zf_worth's reach. An OTIR to 98h
   costs about 370 cycles a byte (port_out and mark_addr each byte)
   against the out_loop copy's 44: a candidate for the same bulk copy.
+- PC-88VA and PC-88VA2, 2026-10-23 (photographs), operations per frame,
+  median of 8 rounds, spread 0-3 % (VA MSX BIOS / VA2 MSX BIOS / VA
+  C-BIOS / VA2 C-BIOS):
+
+  | Test | follow off | follow on |
+  |---|---|---|
+  | Z80 DJNZ | 5 527 / 6 579 / 5 374 / 6 400 | |
+  | Z80 9 instr | 2 816 / 2 946 / 2 737 / 2 867 | |
+  | OUT A0 | 184 / 196 / 186 / 197 | 130 / 134 / 127 / 130 |
+  | OUT A0 + 8 instr | 181 / 192 / 181 / 193 | 19.5 / 20.0 / 19.0 / 19.6 |
+  | IN A2 | 171 / 181 / 169 / 181 | 125 / 128 / 119 / 124 |
+  | OUT 98 VRAM | 79 / 84 / 80 / 85 | 70 / 72 / 69 / 71 |
+  | OTIR 256 | | 0.5 (all four) |
+  | LD/OUT/JR 256 | | 5.9 / 6.1 / 5.7 / 6.0 |
+  | WRTVRM (BIOS) | | 79 / 82 / 73 / 76 |
+  | LDIRVM 256 | | 9.0 / 9.5 / 8.7 / 9.2 |
+
+  I/O follow loses on the hardware as in vaeg: an interpreted
+  instruction costs about as much as a trap (OUT A0 + 8 instr: 9-10
+  times slower with it). Its default is now off (F10 can turn it on).
+  An OTIR of 256 bytes takes two frames, 12-18 times an out_loop copy or
+  LDIRVM of the same bytes; an OUT (98h) costs 2.3 times an OUT (A0h)
+  (mark_addr). The VA2 is about 6 % faster on traps and 19 % on Z80
+  code; vaeg is about 2.6 times the VA on traps, 1.5-1.8 times on Z80
+  code: estimates from vaeg are to be divided so.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
