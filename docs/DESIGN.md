@@ -394,6 +394,55 @@ untested.
   of the 19 titles scrolls this way (no step, no set-up). On the
   hardware: not yet tried.
 
+### The measuring cartridge (`src/cart/bench.asm`, BENCH.ROM)
+
+- On every disk (the distributed one too: our own code), built by
+  build_dos.py with z80asm. MSX.COM now always shows the menu when there
+  is a *.ROM file (BENCH.ROM is key 1, the cartridges follow).
+- Ten tests (see the file's header), each a chunk of 256 operations or
+  one block operation repeated for 120 frames, 8 rounds (about 4
+  minutes); the I/O tests with I/O follow off and on. The screen shows
+  operations per frame, the median of the rounds so far and the spread
+  (max - min) / median. The frame is msx88va's VRTC count, read through
+  ports 96h/97h (register 0 'V', 1-2 the VRTC count, 3 follow_on, read
+  and written, 4-5 the trap count, 6 ram_slot, 7 the gaiji line height);
+  elsewhere JIFFY.
+- It found two bugs. (1) A trap runs with interrupts off and returns
+  after the I/O instruction; z80_follow stopped at the next I/O
+  instruction, so in code made of I/O the Z80 trapped again at once and
+  the VRTC, which the VA requests only for a while, was lost: with I/O
+  follow on, OUT (A0h),A; DJNZ took 8 of 100 VRTCs in vaeg (so the
+  "faster" readings of z80_follow earlier were partly frames not
+  counted, and the Antarctic Adventure and Terminal Run misses partly
+  this). z80_follow now opens a window (STI; NOP; CLI) before every
+  instruction it interprets, and trap_ed between the bytes of a repeated
+  block instruction (an OTIR of 256 bytes lost 77 of 100). (2) Sprites
+  were shown in text mode, where the TMS9918 has none; sprite_table and
+  sprite_flags now treat text mode as display off, and R1's M1 bit
+  rebuilds the descriptors.
+- vaeg, VA model, 8 rounds, spread 0-1 % (per frame; C-BIOS / MSX BIOS):
+
+  | Test | follow off | follow on |
+  |---|---|---|
+  | Z80 DJNZ | 9 779 / 9 990 | |
+  | Z80 9 instr | 2 925 / 2 989 | |
+  | OUT A0 | 482 / 484 | 346 / 354 |
+  | OUT A0 + 8 instr | 433 / 435 | 48 / 49 |
+  | IN A2 | 442 / 452 | 326 / 337 |
+  | OUT 98 VRAM | 226 / 228 | 188 / 192 |
+  | OTIR 256 | | 1.5 / 1.5 |
+  | LD/OUT/JR 256 | | 12.5 / 12.7 |
+  | WRTVRM (BIOS) | | 207 / 212 |
+  | LDIRVM 256 | | 17.4 / 17.7 |
+
+  So in vaeg a trap (about 290 cycles with the DJNZ, of 141 560 a frame)
+  is cheaper than interpreting: about 270 cycles an interpreted
+  instruction. On the hardware a trap is several times dearer (HANDOVER:
+  ~190 us on the VA2); the cartridge's photograph from the VA and VA2
+  decides I/O follow's default and zf_worth's reach. An OTIR to 98h
+  costs about 370 cycles a byte (port_out and mark_addr each byte)
+  against the out_loop copy's 44: a candidate for the same bulk copy.
+
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
 Goal: draw Graphics I (and text mode) cells as TSP characters instead of

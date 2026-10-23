@@ -31,7 +31,9 @@ the C-BIOS patch table (tools/cbios.py); it reads C-BIOS and the cartridge
 from files at run time. Outputs, in build/ (ignored by git):
 
     build/dist/msx88va.d88      MS-DOS 4.0, MSX.COM, C-BIOS 0.29a (as
-                                released, with its licence), MSX.TXT,
+                                released, with its licence), BENCH.ROM
+                                (src/cart/bench.asm, the measuring
+                                cartridge, on every disk), MSX.TXT,
                                 LICENSE.TXT, AUTOEXEC.BAT running MSX
     build/dist/MSX.COM ...      the same files, add_files.py,
                                 get_games.py and pcengine_disk.py (from
@@ -48,14 +50,18 @@ from files at run time. Outputs, in build/ (ignored by git):
                                 distributed)
 
 --define passes NASM defines to src/msx/msx.asm (the test options of
-docs/DESIGN.md: TEST_RESET=n, DUMP_VRAM, PROFILE).
+docs/DESIGN.md: TEST_RESET=n, DUMP_VRAM, PROFILE). BENCH.ROM needs z80asm
+1.8 ($Z80ASM, default z80asm).
 """
 
 import argparse
 import hashlib
 import io
+import os
 import re
 import shutil
+import subprocess
+import tempfile
 import sys
 import zipfile
 from pathlib import Path
@@ -76,6 +82,21 @@ def payload(defines: list[str]) -> bytes:
     dosdisk.nasm([f"-DBASE={dosdisk.BASE:#x}", *(f"-D{d}" for d in defines),
                   "-o", str(out), str(REPO / "src/msx/msx.asm")])
     return out.read_bytes()
+
+
+def bench_rom() -> bytes:
+    """src/cart/bench.asm assembled and padded to a 16 KiB cartridge."""
+    with tempfile.TemporaryDirectory(prefix="msx88va-bench-") as tmp:
+        out = Path(tmp) / "bench.bin"
+        try:
+            subprocess.run([os.environ.get("Z80ASM", "z80asm"), "-o", str(out),
+                            str(REPO / "src/cart/bench.asm")], check=True)
+        except FileNotFoundError:
+            raise SystemExit("error: z80asm 1.8 is needed for BENCH.ROM (set $Z80ASM)")
+        rom = out.read_bytes()
+    if len(rom) > 0x4000:
+        raise SystemExit(f"error: BENCH.ROM is {len(rom)} bytes")
+    return rom + b"\xff" * (0x4000 - len(rom))
 
 
 def patch_table() -> str:
@@ -178,6 +199,7 @@ def main() -> int:
         "CBIOS_M1.ROM": main_rom,
         "CBIOS_L1.ROM": logo_rom,
         "CBIOS.TXT": cbios.licence_text(args.cbios),
+        "BENCH.ROM": bench_rom(),
         "MSX.TXT": dosdisk.dos_text(REPO / "docs/dist/MSX.TXT"),
         "LICENSE.TXT": dosdisk.dos_text(REPO / "LICENSE"),
         "AUTOEXEC.BAT": AUTOEXEC,

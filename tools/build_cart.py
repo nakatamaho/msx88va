@@ -23,7 +23,7 @@
 
 """Assemble a test cartridge (src/cart/NAME.asm) to a 16 KiB ROM.
 
-    python3 -I tools/build_cart.py [--name m02cart|m03cart] [--output PATH]
+    python3 -I tools/build_cart.py [--name m02cart|m03cart|bench] [--output PATH]
 
 Needs z80asm 1.8 ($Z80ASM, default z80asm).
 """
@@ -41,7 +41,7 @@ PAGE = 0x4000
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--name", default="m03cart", choices=["m02cart", "m03cart"])
+    parser.add_argument("--name", default="m03cart", choices=["m02cart", "m03cart", "bench"])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.output is None:

@@ -61,7 +61,8 @@ line a milestone) and, for performance work, `docs/HANDOVER-speed.md`.
   is not evidence that the hardware does; vaeg's I/O-trap cost and
   compatible-mode timing are not the silicon's. The VA is slower than the
   VA2 (the trap path about 1.5 times).
-- Tools: NASM for V30 code, z80asm 1.8 for the Z80 test cartridges,
+- Tools: NASM for V30 code, z80asm 1.8 for the Z80 test cartridges and
+  BENCH.ROM (on every disk, so build_dos.py needs it),
   Python 3 (run with `-I`). vaeg's `tools/pc88va/pcengine_disk.py` writes
   the disk images (`../vaeg`).
 - Code, comments, identifiers and committed documents are in English.

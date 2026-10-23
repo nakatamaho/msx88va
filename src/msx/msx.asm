@@ -819,7 +819,10 @@ z80_follow:
 		lea	ax,[si - 2]		; (the I/O instruction, about)
 		call	zf_worth
 		jc	.stop
-.next:		dec	word [zf_all]
+.next:		sti				; a window for the VRTC: a trap runs
+		nop				; with interrupts off, and code made
+		cli				; only of I/O would never let it in
+		dec	word [zf_all]
 		jz	.stop
 		dec	byte [zf_left]
 		jz	.stop
@@ -1434,20 +1437,62 @@ port_in:	mov	bl,ah
 io_ff:		mov	al,0ffh
 io_none:	ret
 
+; Ports 96h (a register number) and 97h (its value), unused on an MSX1,
+; for the measuring cartridge (src/cart/bench.asm): 0 'V' (msx88va), 1
+; and 2 the VRTC count (2: high byte of the count latched when 1 is
+; read), 3 follow_on (also written), 4 and 5 the trap count (latched
+; likewise), 6 ram_slot (0: an MSX BIOS), 7 the gaiji cells' rasters a
+; line - 1 (0: not in use).
+bench_sel:	mov	[bench_reg],al
+		ret
+bench_w:	cmp	byte [bench_reg],3
+		jne	.ret
+		and	al,1
+		mov	[follow_on],al
+.ret:		ret
+bench_r:	mov	bl,[bench_reg]
+		cmp	bl,7
+		ja	io_ff
+		xor	bh,bh
+		shl	bx,1
+		jmp	[cs:.t + bx]
+.t		dw	.sig, .f0, .f1, .fol, .t0, .t1, .slot, .pcg
+.sig:		mov	al,'V'
+		ret
+.f0:		mov	ax,[frames]
+		jmp	.latch
+.t0:		mov	ax,[traps]
+.latch:		mov	[bench_latch],ax
+		ret
+.f1:
+.t1:		mov	al,[bench_latch + 1]
+		ret
+.fol:		mov	al,[follow_on]
+		ret
+.slot:		mov	al,[ram_slot]
+		ret
+.pcg:		xor	al,al
+		cmp	byte [pcg_on],0
+		je	.ret
+		mov	al,[pcg_h]
+.ret:		ret
+
 lpt_stat_r:	mov	al,0fdh			; bit 1 clear: ready
 		ret
 
 ; 90h-91h: the printer, never busy, its output dropped (an MSX BIOS
 ; waits in LPTOUT for a printer that is ready).
 PORTS		equ	1ch			; 90h-ABh
-out_table	times	8 dw io_none		; 90h-97h
+out_table	times	6 dw io_none		; 90h-95h
+		dw	bench_sel, bench_w	; 96h, 97h: msx88va's own
 		dw	vdp_data_w, vdp_ctrl_w
 		times	6 dw io_none		; 9Ah-9Fh (not trapped)
 		dw	psg_addr_w, psg_data_w, io_none, io_none
 		times	4 dw io_none		; A4h-A7h
 		dw	ppi_a_w, io_none, ppi_c_w, ppi_ctrl_w
 in_table	dw	lpt_stat_r		; 90h
-		times	7 dw io_ff		; 91h-97h
+		times	6 dw io_ff		; 91h-96h
+		dw	bench_r			; 97h
 		dw	vdp_data_r, vdp_stat_r
 		times	6 dw io_ff
 		dw	io_ff, io_ff, psg_data_r, io_ff
@@ -1525,6 +1570,9 @@ trap_ed:	push	cx
 		sub	word [bp + T_HL],2
 .bz:		cmp	byte [bp + T_BC + 1],0
 		je	.bdone
+		sti				; a window for the VRTC between
+		nop				; bytes (a long OTIR would keep it
+		cli				; out, and it is lost)
 		test	byte [ed_op],10h	; a repeat: the next byte in the
 		jnz	.block			; same trap
 		and	byte [bp + 6],0bfh	; Z = 0
@@ -2151,7 +2199,7 @@ set_vreg:	mov	ah,[vregs + bx]
 .ret:		ret
 
 vreg_cells	db	02h, 58h, 0fh, 0ffh, 07h, 00h, 00h, 0ffh
-vreg_sprites	db	00h, 43h, 00h, 00h, 00h, 7fh, 07h, 00h
+vreg_sprites	db	00h, 53h, 00h, 00h, 00h, 7fh, 07h, 00h	; R1: also M1 (text)
 
 ; VRAM address BX was written: flag its pattern, colour or name row for
 ; the renderer. Keeps every register. DS = CS.
@@ -4372,10 +4420,12 @@ quad:		lodsb
 sprite_table:	mov	di,SPR_TABLE
 		mov	si,[r_sat]
 		mov	cx,32
-		mov	dl,0			; DL: 1 after a Y of D0h
-		test	byte [vregs + 1],40h	; display off: no sprites
-		jnz	.spr
-		mov	dl,1
+		mov	dl,1			; DL: 1 after a Y of D0h; none with
+		mov	al,[vregs + 1]		; the display off or in text mode
+		and	al,50h
+		cmp	al,40h
+		jne	.spr
+		mov	dl,0
 .spr:		or	dl,dl
 		jnz	.off
 		push	ds
@@ -4463,8 +4513,10 @@ sprite_table:	mov	di,SPR_TABLE
 ; again only after a write to the attribute table, a sprite pattern or a
 ; sprite register; the result is applied every frame. DS = CS.
 
-sprite_flags:	test	byte [vregs + 1],40h	; display off: nothing
-		jnz	.on
+sprite_flags:	mov	al,[vregs + 1]		; display off or text mode: no
+		and	al,50h			; sprites, no flags
+		cmp	al,40h
+		je	.on
 		ret
 .on:		cmp	byte [f_dirty],0
 		je	.apply
@@ -5471,6 +5523,9 @@ flipped		db	0			; render_flip moved a table
 glyphs_all	db	1			; pcg_glyphs: every pattern
 pend_set	db	1			; a pattern or colour flag pending
 zf_left		db	0			; z80_follow
+bench_reg	db	0			; ports 96h, 97h
+		align	2
+bench_latch	dw	0
 scr_on		db	0			; rows scr_b .. 23 in the ring
 scr_b		db	0
 scr_n		db	0			; its rows: 24 - scr_b

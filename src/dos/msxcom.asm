@@ -33,8 +33,8 @@
 ; else C-BIOS 0.29a (CBIOS_M1.ROM, CBIOS_L1.ROM) from the current
 ; directory, checks and patches C-BIOS as tools/cbios.py lists,
 ; reads the cartridge (8, 16 or 32 KiB, from page 1) named on the command
-; line, or else the one *.ROM file of the current directory other than
-; C-BIOS (a menu when there are several, none: no cartridge), saves the
+; line, or else a menu of the *.ROM files of the current directory other
+; than C-BIOS (none: no cartridge; BENCH.ROM is on every disk), saves the
 ; gaiji RAM to GAIJI.BAK (unless /N, or GAIJI.BAK exists: an earlier copy
 ; is kept; the MSX program then shows Graphics I with user-defined
 ; characters), then copies the MSX program (src/msx/msx.asm, assembled
@@ -493,10 +493,7 @@ choose_cart:	cmp	byte [cart_name],0
 		jnz	.some
 		mov	byte [cart_name],0	; none: C-BIOS alone
 		ret
-.some:		mov	si,cart_list
-		cmp	al,1
-		je	.take_si
-		mov	dx,s_menu		; a menu, four items a line,
+.some:		mov	dx,s_menu		; a menu, four items a line,
 		call	print			; keys 1-9 then A-Z
 		xor	bx,bx			; BL: the item
 		mov	si,cart_list

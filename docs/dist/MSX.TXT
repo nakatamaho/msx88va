@@ -18,9 +18,14 @@ run natively (fast); another version runs as it is, much slower.
 
 MSX.COM plays a cartridge ROM file: 8, 16 or 32 KiB, without a mapper. Copy
 your own ROM files to this disk (under MS-DOS, or with add_files.py on a
-disk image). Without an argument MSX runs the one *.ROM file of the
-current directory other than C-BIOS, shows a menu when there are several,
-and starts C-BIOS alone when there is none. No cartridge ROM is included.
+disk image). Without an argument MSX shows the *.ROM files of the
+current directory other than C-BIOS in a menu ("0" starts C-BIOS alone).
+No cartridge ROM is included.
+
+BENCH.ROM (key 1 in the menu) is msx88va's measuring cartridge: about
+four minutes of tests (eight rounds), then a table of operations per
+frame with I/O follow off and on. A photograph of it tells which settings
+suit the machine. SPACE runs it again.
 
 Free games: on a PC with Python 3,
 
