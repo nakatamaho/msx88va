@@ -33,7 +33,7 @@ E107h) set, BC, DE, HL set, OUT (A0h),A (the trap that starts
 z80_follow), the snippet, then natively the SP, the registers, scratch
 and stack into a 48-byte result at 8000h + 48 * n; at the end the
 results go to VRAM 0000h and the snippets' VRAM writes are at 3000h-
-34FFh. Build the private disk twice with --define DUMP_VRAM, once with
+35FFh. Build the private disk twice with --define DUMP_VRAM, once with
 --define TEST_FOLLOWALL (z80_follow interprets whatever follows, not
 only where zf_worth expects more I/O) and once with --define
 TEST_NOFOLLOW (every I/O instruction trapped alone, the rest run by the
@@ -213,6 +213,18 @@ def snippets():
     @case
     def _(a): a.db(0x22, 0x00, 0xe0); inc(a, "A")
     @case
+    def _(a):                                    # OTIR of 32 bytes to 98h
+        vaddr(a, 0x3410); ld_rn(a, "C", 0x98); ld16(a, "HL", 0xe000); ld_rn(a, "B", 0x20)
+        a.db(0xed, 0xb3)
+    @case
+    def _(a):                                    # OTIR of 256 bytes (B = 0)
+        vaddr(a, 0x3480); ld_rn(a, "C", 0x98); ld16(a, "HL", 0xe000); ld_rn(a, "B", 0)
+        a.db(0xed, 0xb3)
+    @case
+    def _(a):                                    # 5 OUTIs with B = 3: B wraps
+        vaddr(a, 0x3440); ld_rn(a, "C", 0x98); ld16(a, "HL", 0xe0f8); ld_rn(a, "B", 3)
+        a.db(*([0xed, 0xa3] * 5))
+    @case
     def _(a):                                    # RET cc after CP, JP P/PO
         alu(a, "CP", n=0x40); a.abs(0xf2, "x"); ld_rn(a, "B", 1); a.L("x")
         a.abs(0xe2, "y"); ld_rn(a, "C", 1); a.L("y"); a.db(0)
@@ -280,8 +292,8 @@ def compare(path_a, path_b):
             print(f"{'':20}{regs(y)} {y[10:34].hex()}")
     if not any(b[:48 * n_cases]):
         print("no results: did the cartridge run?"); return 1
-    vram = a[0x3000:0x3500] == b[0x3000:0x3500]
-    print(f"{n_cases - bad} of {n_cases} cases equal; VRAM 3000h-34FFh {'equal' if vram else 'differs'}")
+    vram = a[0x3000:0x3600] == b[0x3000:0x3600]
+    print(f"{n_cases - bad} of {n_cases} cases equal; VRAM 3000h-35FFh {'equal' if vram else 'differs'}")
     return 0 if bad == 0 and vram else 1
 
 

@@ -1,5 +1,12 @@
 # AGENTS.md — msx88va
 
+## Filesystem access boundary
+
+Do not read or write directories above `~/work` (`/home/maho/work`),
+or files or directories outside that tree. Keep all file access within
+`~/work` and its descendants, including access through symlinks and tools.
+This restriction takes precedence over any paths or workflows below.
+
 An MSX1 cartridge player for the NEC PC-88VA and PC-88VA2. Two-clause BSD
 licence (`LICENSE`). Local repository; no remote yet.
 

@@ -467,6 +467,21 @@ untested.
   (mark_addr). The VA2 is about 6 % faster on traps and 19 % on Z80
   code; vaeg is about 2.6 times the VA on traps, 1.5-1.8 times on Z80
   code: estimates from vaeg are to be divided so.
+- `block_vdp`: an OTIR, or a run of identical OUTIs, to port 98h copies
+  its bytes from Z80 HL to VRAM at once and marks them by one
+  vram_written (OTIR: B bytes, 0 = 256, then B = 0, Z = 1; n OUTIs: B -
+  n, Z from B; HL and the PC past). Not with TEST_NOFOLLOW, so that
+  tools/follow_cart.py checks it: OTIR of 32 and of 256 bytes and five
+  OUTIs with B = 3 added, 200 of 200 cases equal. vaeg (VA model):
+  OTIR 256 1.5 -> 16.7 a frame (BENCH.ROM); Terminal Run 0.98 VRTCs a
+  frame in play (0.79 before, with I/O follow on); the 19 titles look as
+  before with both BIOSes.
+- PC-88VA and PC-88VA2, 2026-10-23 (photographs, disk ba415be2...),
+  I/O follow off, VA MSX BIOS / VA2 MSX BIOS /
+  VA C-BIOS / VA2 C-BIOS: OTIR 256 7.9 / 8.3 / 8.1 / 8.4 a frame (0.5
+  before: 16 times), about the LDIRVM rate (8.6 / 9.0 / 8.8 / 9.1);
+  LD/OUT/JR 256 7.6 / 7.9 / 7.8 / 8.1 (5.9-6.1 before, measured with I/O
+  follow on); the other tests as before within 1-2 %.
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 

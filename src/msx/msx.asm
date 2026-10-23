@@ -1554,6 +1554,17 @@ trap_ed:	push	cx
 		or	[bp + 6],ah
 		jmp	.ret
 .block:		mov	es,[bp + T_DS]		; the Z80 segment
+%ifndef TEST_NOFOLLOW
+		mov	al,[ed_op]		; OTIR or OUTI (out, HL up) to the
+		and	al,09h			; VDP's data port: at once
+		cmp	al,01h
+		jne	.bslow
+		cmp	byte [bp + T_BC],98h
+		jne	.bslow
+		call	block_vdp
+		jmp	.ret
+.bslow:
+%endif
 		mov	di,[bp + T_HL]
 		dec	byte [bp + T_BC + 1]	; B
 		mov	ah,[bp + T_BC]		; port: C
@@ -1596,6 +1607,59 @@ trap_ed:	push	cx
 		pop	dx
 		pop	cx
 		jmp	trap.follow
+
+; An OTIR, or a run of identical OUTIs (unrolled transfers), to port 98h:
+; the bytes from Z80 HL go to VRAM at once (on the hardware an OTIR of 256
+; bytes took two frames byte by byte, BENCH.ROM). OTIR: B bytes (0: 256),
+; then B = 0, Z = 1; a run of n OUTIs: n bytes, B - n, Z from B. HL past
+; the bytes, the PC past the instruction(s). From trap_ed.block (ES: the
+; Z80 segment, DS = CS).
+block_vdp:	mov	di,[bp + 2]		; at the ED
+		test	byte [ed_op],10h
+		jz	.run
+		mov	cl,[bp + T_BC + 1]	; OTIR: B bytes
+		xor	ch,ch
+		or	cl,cl
+		jnz	.otir
+		inc	ch			; 256
+.otir:		mov	byte [bp + T_BC + 1],0
+		add	di,2
+		or	byte [bp + 6],40h	; Z = 1
+		jmp	.copy
+.run:		xor	cx,cx			; OUTIs: as many as follow
+.r:		cmp	word [es:di],0a3edh
+		jne	.counted
+		add	di,2
+		inc	cx
+		cmp	cx,256
+		jb	.r
+.counted:	sub	[bp + T_BC + 1],cl	; B - n
+		and	byte [bp + 6],0bfh	; Z from B
+		cmp	byte [bp + T_BC + 1],0
+		jne	.copy
+		or	byte [bp + 6],40h
+.copy:		mov	[bp + 2],di
+		mov	si,[bp + T_HL]
+		add	[bp + T_HL],cx
+		mov	ax,[bp + T_DS]
+		push	ds
+		mov	bx,[vaddr]
+		push	bx
+		push	cx
+		mov	di,bx
+		mov	dx,VRAMSEG
+		mov	es,dx
+		mov	ds,ax
+.c:		and	di,3fffh
+		movsb
+		loop	.c
+		mov	al,[si - 1]
+		pop	cx
+		pop	bx
+		pop	ds
+		mov	[vahead],al
+		mov	ax,di
+		jmp	vram_written
 
 ; ---------------------------------------------------------------------------
 ; C-BIOS 0.29a routines that start with CALLN CALLN_VEC (tools/cbios.py).
