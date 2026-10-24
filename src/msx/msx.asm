@@ -3392,6 +3392,15 @@ scr_check:	cmp	byte [scr_allow],0
 		mov	byte [scr_phase],0
 		mov	byte [scr_on],1
 		mov	byte [rfull],1		; drawn again in full
+		push	es			; the ring's whole lines black: its
+		mov	es,[ring_seg]		; margins show (power-on contents
+		xor	di,di			; on the hardware)
+		mov	al,[scr_n]
+		xor	ah,ah
+		imul	cx,ax,8 * STRIDE / 2
+		xor	ax,ax
+		rep	stosw
+		pop	es
 		jmp	scr_ports
 .ret:		ret
 ; CF = 1 (JB) unless at least 28 cells of row AL hold the names the
@@ -4583,6 +4592,11 @@ sprite_table:	mov	di,SPR_TABLE
 		je	.end
 		test	ah,0fh			; colour 0: nothing to show
 		jz	.off2
+		cmp	bl,0bfh			; Y + 1 192-223: below the picture
+		jb	.shown			; (the TMS9918's border; on the VA
+		cmp	bl,0dfh			; it would show under the picture)
+		jb	.off2
+.shown:
 		push	cx
 		push	ax
 		; Y: line Y + 1 of the picture, the top 32 lines negative
@@ -5403,7 +5417,9 @@ svc_texts	db	4, 1, 15, 'msx88va settings', 0
 draw_mode	db	0			; 0 AUTO, 1 every frame, 2 1/2, 3 1/3
 follow_on	db	0			; z80_follow on (F10; off: it costs
 						; more than it saves, BENCH.ROM)
-scr_allow	db	1			; scrolling by frame buffer 2
+scr_allow	db	0			; scrolling by frame buffer 2 (off:
+						; on the hardware the ship vanished
+						; and the VA2 hung, 2026-10-24)
 		align	2
 ring_seg	dw	0			; the scroll ring (screen_init)
 ring_lo		dw	0			; its GVRAM-relative address

@@ -50,9 +50,10 @@ left and right: change, F10: back to the game):
                natively up to the next one; OFF (the default) traps
                each. OFF was faster in every test on the PC-88VA and
                PC-88VA2.
-  HW scroll    ON (the default) lets a game that scrolls by whole rows
-               (Star Force) scroll with the VA's graphics hardware; OFF
-               draws every changed cell.
+  HW scroll    ON lets a game that scrolls by whole rows (Star Force)
+               scroll with the VA's graphics hardware; OFF (the default)
+               draws every changed cell. ON is experimental: on the
+               hardware it hid sprites and stopped the game.
 
 The page also shows the game frames and the pictures drawn in the last
 second.

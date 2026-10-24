@@ -516,6 +516,18 @@ untested.
   VA's the alternation can beat into a slow blink. A skipped frame left
   the descriptors as they were, so one set stayed two frames: now only
   the background is skipped, sprite_step runs every frame.
+- PC-88VA and PC-88VA2, 2026-10-24 (maintainer, disk 0490d0c6...): the
+  pitch now matches an MSX's. Star Force with the hardware scroll: on
+  the VA the background scrolled, but the ship (a sprite) did not show
+  and the ring's margins showed garbage; on the VA2 the game stopped at
+  "ALPHA AREA" with a black screen. Bosconian on both: garbage under the
+  picture. Changes: HW scroll off by default (frame buffer 2 needs a
+  probe on the hardware first: perhaps a sub-screen enable or a
+  priority the BIOS left for one screen); the ring's whole lines are
+  cleared when it is set up (vaeg's GVRAM starts at 0, the hardware's
+  does not); sprites with Y + 1 in 192-223, below the picture in the
+  TMS9918's border, are not shown (the VA showed them in the lines under
+  the picture: Bosconian parks sprites there).
 
 ## M05: Graphics I on the TSP text screen (`src/pcg/pcgtest.asm`)
 
