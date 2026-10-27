@@ -10,6 +10,21 @@ This restriction takes precedence over any paths or workflows below.
 An MSX1 cartridge player for the NEC PC-88VA and PC-88VA2. Two-clause BSD
 licence (`LICENSE`). Local repository; no remote yet.
 
+## Measurements on the machines
+
+Software written to measure the PC-88VA, PC-88VA2 or PC-88VA3 (benchmarks,
+probes, timing tests) is, as far as possible:
+
+- free: synthetic data only, no ROM, game or other copyrighted data, so
+  that it can be published and also serve vaeg's corrections (vaeg's
+  `demos/`);
+- an MS-DOS 4.0 program, run from the FreeDOS-88VA project's msdos4-va.2
+  disk (a self-booting test disk only where MS-DOS cannot be used);
+- able to tell the machine and show it on its screen, so that every
+  photograph names its machine: the ROM word at F000:FFFE is FFFFh on a
+  PC-88VA, FFFEh on a PC-88VA2 or VA3, and FFFDh on a PC-88VA with the
+  PC-88VA-91 board.
+
 ## What this is
 
 The MSX's Z80 code runs unmodified in the uPD9002 CPU's Z80-compatible
